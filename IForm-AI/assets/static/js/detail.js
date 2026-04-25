@@ -65,7 +65,7 @@
         });
 
         elements.tabPanels.forEach((panel) => {
-            panel.addEventListener('click', handleTreeToggle);
+            panel.addEventListener('click', handlePanelToggle);
         });
     }
 
@@ -135,7 +135,7 @@
         results.forEach((result, index) => {
             const tabKey = TAB_KEYS[index];
             if (result.status === 'fulfilled') {
-                elements.panels[tabKey].innerHTML = renderBusinessValue(result.value);
+                elements.panels[tabKey].innerHTML = renderTabValue(tabKey, result.value);
                 successCount += 1;
             } else {
                 elements.panels[tabKey].innerHTML = renderErrorBlock(result.reason);
@@ -515,14 +515,14 @@
     function buildFormConfigRenderData(formConfig, documentParsed) {
         const fieldMap = buildFieldMap(formConfig);
         const documentMeta = buildDocumentMeta(documentParsed);
-        const mainFields = Array.from(fieldMap.main.values()).map(toComponentSummary);
+        const mainFields = fieldMap.mainDisplayRows || [];
         const subTables = Array.from(fieldMap.tables.values()).map((table) => ({
             title: table.title,
             fieldId: table.fieldId,
             columncode: table.columncode || '-',
             componentType: table.componentKey,
             childFieldCount: table.columns.length,
-            childFieldDetails: table.columns.map(toComponentSummary)
+            childFieldDetails: table.displayRows || []
         }));
 
         return {
@@ -705,19 +705,19 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         const fieldMap = {
             main: new Map(),
             tables: new Map(),
-            all: new Map()
+            all: new Map(),
+            mainDisplayRows: []
         };
         const components = Array.isArray(formConfig && formConfig.formComponents) ? formConfig.formComponents : [];
+        const mainScopeState = createLayoutScopeState('主表布局');
 
         components.forEach((component) => {
-            if (!component || !component.fieldId) {
+            if (!component) {
                 return;
             }
 
-            if (component.componentKey === 'DataTable') {
-                const table = Object.assign({}, normalizeComponentMeta(component), {
-                    columns: flattenNestedComponents(component.layoutDetail || [])
-                });
+            if (component.componentKey === 'DataTable' && component.fieldId) {
+                const table = buildTableComponentMeta(component);
                 table.columns.forEach((child) => {
                     fieldMap.all.set(child.fieldId, child);
                 });
@@ -725,39 +725,150 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 return;
             }
 
-            flattenNestedComponents([component]).forEach((item) => {
+            const parsedNode = collectNestedComponentData([component], {
+                depth: 0,
+                tablePath: [],
+                scopeState: mainScopeState,
+                defaultTablePathLabel: '主表直出区域'
+            });
+
+            parsedNode.fields.forEach((item) => {
                 fieldMap.all.set(item.fieldId, item);
                 fieldMap.main.set(item.fieldId, item);
             });
+            fieldMap.mainDisplayRows = fieldMap.mainDisplayRows.concat(parsedNode.displayRows);
         });
 
         return fieldMap;
     }
 
-    function flattenNestedComponents(components) {
+    function createLayoutScopeState(anonymousTablePrefix) {
+        return {
+            anonymousTableCount: 0,
+            anonymousTablePrefix: anonymousTablePrefix || '布局'
+        };
+    }
+
+    function buildTableComponentMeta(component) {
+        const tableTitle = (component && (component.title || component.fieldId)) || '未命名子表';
+        const parsedChildren = collectNestedComponentData(component.layoutDetail || [], {
+            depth: 0,
+            tablePath: [],
+            scopeState: createLayoutScopeState(`${tableTitle}布局`),
+            defaultTablePathLabel: `${tableTitle}直出区域`
+        });
+
+        return Object.assign({}, normalizeComponentMeta(component), {
+            columns: parsedChildren.fields,
+            displayRows: parsedChildren.displayRows
+        });
+    }
+
+    function collectNestedComponentData(components, context) {
         return (Array.isArray(components) ? components : []).reduce((result, component) => {
             if (!component) {
                 return result;
             }
 
-            if (component.componentKey === 'TableLayout' || component.componentKey === 'TdLayout') {
-                return result.concat(flattenNestedComponents(component.layoutDetail || []));
+            if (component.componentKey === 'TableLayout') {
+                const tableTitle = resolveTableLayoutTitle(component, context.scopeState);
+                const nextTablePath = context.tablePath.concat(tableTitle);
+                const nested = collectNestedComponentData(component.layoutDetail || [], {
+                    depth: context.depth + 1,
+                    tablePath: nextTablePath,
+                    scopeState: context.scopeState,
+                    defaultTablePathLabel: `${tableTitle}直出区域`
+                });
+                const tableMeta = normalizeComponentMeta(component, {
+                    fieldIdFallback: '-',
+                    titleFallback: tableTitle,
+                    columncodeFallback: '-'
+                });
+
+                result.displayRows.push({
+                    rowType: 'tableLayout',
+                    depth: context.depth,
+                    tablePathLabel: nextTablePath.join(' / '),
+                    title: tableTitle,
+                    fieldId: tableMeta.fieldId,
+                    columncode: '-',
+                    componentType: tableMeta.componentKey,
+                    childFieldCount: nested.fields.length,
+                    required: '-',
+                    visible: '-',
+                    invisible: '-'
+                });
+                result.fields = result.fields.concat(nested.fields);
+                result.displayRows = result.displayRows.concat(nested.displayRows);
+                return result;
+            }
+
+            if (component.componentKey === 'TdLayout') {
+                const nested = collectNestedComponentData(component.layoutDetail || [], {
+                    depth: context.depth,
+                    tablePath: context.tablePath,
+                    scopeState: context.scopeState,
+                    defaultTablePathLabel: context.defaultTablePathLabel
+                });
+                result.fields = result.fields.concat(nested.fields);
+                result.displayRows = result.displayRows.concat(nested.displayRows);
+                return result;
             }
 
             if (!component.fieldId) {
-                return result.concat(flattenNestedComponents(component.layoutDetail || []));
+                const nested = collectNestedComponentData(component.layoutDetail || [], {
+                    depth: context.depth,
+                    tablePath: context.tablePath,
+                    scopeState: context.scopeState,
+                    defaultTablePathLabel: context.defaultTablePathLabel
+                });
+                result.fields = result.fields.concat(nested.fields);
+                result.displayRows = result.displayRows.concat(nested.displayRows);
+                return result;
             }
 
-            result.push(normalizeComponentMeta(component));
+            const normalized = normalizeComponentMeta(component);
+            result.fields.push(normalized);
+            result.displayRows.push({
+                rowType: 'field',
+                depth: context.depth,
+                tablePathLabel: context.tablePath.length
+                    ? context.tablePath.join(' / ')
+                    : (context.defaultTablePathLabel || '直出区域'),
+                title: normalized.title,
+                fieldId: normalized.fieldId,
+                columncode: normalized.columncode || '-',
+                componentType: normalized.componentKey,
+                required: formatPrimitive(Boolean(normalized.required)),
+                visible: formatPrimitive(Boolean(normalized.visible)),
+                invisible: formatPrimitive(Boolean(normalized.invisible))
+            });
             return result;
-        }, []);
+        }, {
+            fields: [],
+            displayRows: []
+        });
     }
 
-    function normalizeComponentMeta(component) {
+    function resolveTableLayoutTitle(component, scopeState) {
+        if (component && component.title) {
+            return component.title;
+        }
+
+        if (component && component.fieldId) {
+            return component.fieldId;
+        }
+
+        scopeState.anonymousTableCount += 1;
+        return `${scopeState.anonymousTablePrefix}${scopeState.anonymousTableCount}`;
+    }
+
+    function normalizeComponentMeta(component, options) {
+        const config = options || {};
         return {
-            fieldId: component.fieldId,
-            title: component.title || component.fieldId,
-            columncode: component.columncode || component.columnCode || '-',
+            fieldId: component.fieldId || config.fieldIdFallback || '-',
+            title: component.title || component.fieldId || config.titleFallback || '-',
+            columncode: component.columncode || component.columnCode || config.columncodeFallback || '-',
             componentKey: component.componentKey || '-',
             required: Boolean(component.required),
             invisible: Boolean(component.invisible),
@@ -906,6 +1017,222 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         `).join('');
     }
 
+    function renderTabValue(tabKey, value) {
+        if (tabKey === 'formConfig') {
+            return renderFormConfigValue(value);
+        }
+
+        return renderBusinessValue(value);
+    }
+
+    function renderFormConfigValue(value) {
+        if (!value || typeof value !== 'object') {
+            return renderBusinessValue(value);
+        }
+
+        const basicInfoEntries = [
+            ['表单标题', value.表单标题],
+            ['表单版本id（pk_temp）', value['表单版本id（pk_temp）']],
+            ['流程定义ID', value.流程定义ID],
+            ['主表字段数量', value.主表字段数量],
+            ['子表数量', value.子表数量]
+        ];
+        const formProperties = value.表单属性 && typeof value.表单属性 === 'object'
+            ? Object.entries(value.表单属性)
+            : [];
+
+        return `
+            <div class="business-data-view">
+                ${renderBusinessSection('基础信息', '统计数量仅包含真实控件，TableLayout 仅作为层级和归属展示。', renderBusinessTable(basicInfoEntries))}
+                ${formProperties.length ? renderBusinessSection('表单属性', '保留原有基础属性信息，便于核对配置开关。', renderBusinessTable(formProperties)) : ''}
+                ${renderBusinessSection(
+                    '主表字段',
+                    '主表区域保留 TableLayout 层级，控件可看出所在表格归属。',
+                    renderComponentHierarchyTable(value.主表字段, '暂无主表控件'),
+                    { collapsible: true, sectionKey: 'main-fields' }
+                )}
+                ${renderFormConfigSubTables(value.子表配置)}
+                ${value.原始配置明细 ? renderBusinessSection('原始配置明细', '保留原始 JSON 结构，便于排查接口返回细节。', renderTreeDetails(Object.entries(value.原始配置明细), 0)) : ''}
+            </div>
+        `;
+    }
+
+    function renderFormConfigSubTables(subTables) {
+        const items = Array.isArray(subTables) ? subTables : [];
+        if (!items.length) {
+            return renderBusinessSection('子表配置', '当前表单未配置子表。', '<div class="empty-state">暂无子表配置</div>');
+        }
+
+        return renderBusinessSection(
+            '子表配置',
+            '子表字段同样保留 TableLayout 层级和表格归属，统计数量仅计算真实子字段。',
+            `
+                <div class="subtable-config-list">
+                    ${items.map((table) => renderSubTableCard(table)).join('')}
+                </div>
+            `
+        );
+    }
+
+    function renderSubTableCard(table) {
+        const summaryEntries = [
+            ['标题', table && table.标题],
+            ['fieldId', table && table.fieldId],
+            ['columncode', table && table.columncode],
+            ['组件类型', table && table.组件类型],
+            ['子字段数量', table && table.子字段数量]
+        ];
+
+        const tableKey = `subtable-${hashString(String((table && table.fieldId) || (table && table.标题) || 'subtable'))}`;
+
+        return `
+            <article class="subtable-card">
+                <div class="subtable-card-head">
+                    <div class="subtable-card-title">${escapeHtml((table && table.标题) || '-')}</div>
+                    <div class="subtable-card-meta">${escapeHtml(String((table && table.子字段数量) || 0))} 个子字段</div>
+                </div>
+                ${renderBusinessTable(summaryEntries)}
+                <div class="subtable-card-body">
+                    ${renderCollapsibleBlock(
+                        '子字段明细',
+                        renderComponentHierarchyTable(table && table.子字段明细, '暂无子字段配置'),
+                        {
+                            collapsed: false,
+                            blockClassName: 'subtable-detail-block',
+                            blockKey: tableKey
+                        }
+                    )}
+                </div>
+            </article>
+        `;
+    }
+
+    function renderComponentHierarchyTable(rows, emptyText) {
+        const items = Array.isArray(rows) ? rows : [];
+        if (!items.length) {
+            return `<div class="empty-state">${escapeHtml(emptyText || '暂无控件配置')}</div>`;
+        }
+
+        const normalizedItems = buildComponentHierarchyRows(items);
+
+        return `
+            <div class="business-table-wrap">
+                <table class="business-table business-table-detail component-table">
+                    <thead>
+                        <tr>
+                            <th>字段标题 / 层级</th>
+                            <th>fieldId</th>
+                            <th>columncode</th>
+                            <th>组件类型</th>
+                            <th>所属表格</th>
+                            <th>必填</th>
+                            <th>可见</th>
+                            <th>隐藏</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${normalizedItems.map((row) => renderComponentHierarchyRow(row)).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function buildComponentHierarchyRows(rows) {
+        const items = Array.isArray(rows) ? rows : [];
+        const layoutStack = [];
+
+        return items.map((item, index) => {
+            const row = Object.assign({}, item);
+            const depth = Number(row.depth) || 0;
+
+            while (layoutStack.length && layoutStack[layoutStack.length - 1].depth >= depth) {
+                layoutStack.pop();
+            }
+
+            row.rowIndex = index;
+            row.rowKey = row.rowKey || `component-row-${index}-${hashString(`${row.rowType || 'field'}-${row.title || ''}-${row.fieldId || ''}-${row.tablePathLabel || ''}`)}`;
+            row.parentLayoutKey = layoutStack.length ? layoutStack[layoutStack.length - 1].rowKey : '';
+            row.ancestorLayoutKeys = layoutStack.map((layout) => layout.rowKey);
+
+            if (layoutStack.length) {
+                layoutStack[layoutStack.length - 1].hasChildren = true;
+            }
+
+            if (row.rowType === 'tableLayout') {
+                row.hasChildren = false;
+                layoutStack.push(row);
+                return row;
+            }
+
+            return row;
+        });
+    }
+
+    function renderComponentHierarchyRow(row) {
+        const item = row || {};
+        const depthClass = `depth-${Math.min(Math.max(Number(item.depth) || 0, 0), 6)}`;
+        const isLayoutRow = item.rowType === 'tableLayout';
+        const rowClassName = isLayoutRow ? 'component-row is-layout-row' : 'component-row';
+        const requiredText = item.required === undefined ? '-' : item.required;
+        const visibleText = item.visible === undefined ? '-' : item.visible;
+        const invisibleText = item.invisible === undefined ? '-' : item.invisible;
+        const layoutCountText = isLayoutRow
+            ? formatComponentCountLabel(item.childFieldCount)
+            : '';
+        const ancestorLayoutKeys = Array.isArray(item.ancestorLayoutKeys) ? item.ancestorLayoutKeys.join(',') : '';
+        const layoutToggle = isLayoutRow && item.hasChildren
+            ? `
+                <button
+                    class="component-row-toggle"
+                    type="button"
+                    data-component-toggle="layout"
+                    data-layout-key="${escapeHtml(item.rowKey || '')}"
+                    aria-expanded="true"
+                    aria-label="收起${escapeHtml(item.title || '表格')}下级控件"
+                >
+                    <span class="component-row-toggle-icon" aria-hidden="true"></span>
+                </button>
+            `
+            : '<span class="component-row-toggle-placeholder" aria-hidden="true"></span>';
+
+        return `
+            <tr
+                class="${rowClassName}"
+                data-row-key="${escapeHtml(item.rowKey || '')}"
+                data-row-type="${escapeHtml(item.rowType || 'field')}"
+                data-parent-layout-key="${escapeHtml(item.parentLayoutKey || '')}"
+                data-ancestor-layout-keys="${escapeHtml(ancestorLayoutKeys)}"
+            >
+                <td>
+                    <div class="component-title-cell ${depthClass}">
+                        ${layoutToggle}
+                        <span class="component-depth-line" aria-hidden="true"></span>
+                        <span class="component-name">${escapeHtml(item.title || '-')}</span>
+                        ${isLayoutRow ? '<span class="component-kind is-layout">表格</span>' : ''}
+                        ${layoutCountText ? `<span class="component-meta-chip">${escapeHtml(layoutCountText)}</span>` : ''}
+                    </div>
+                </td>
+                <td>${escapeHtml(item.fieldId || '-')}</td>
+                <td>${escapeHtml(item.columncode || '-')}</td>
+                <td>${escapeHtml(item.componentType || '-')}</td>
+                <td>${escapeHtml(item.tablePathLabel || '-')}</td>
+                <td>${escapeHtml(String(requiredText))}</td>
+                <td>${escapeHtml(String(visibleText))}</td>
+                <td>${escapeHtml(String(invisibleText))}</td>
+            </tr>
+        `;
+    }
+
+    function formatComponentCountLabel(count) {
+        const numericCount = Number(count);
+        if (!isFinite(numericCount) || numericCount < 0) {
+            return '';
+        }
+
+        return `${numericCount}个控件`;
+    }
+
     function renderBusinessValue(value) {
         if (isEmptyValue(value)) {
             return '<div class="empty-state">暂无数据</div>';
@@ -937,15 +1264,78 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         `;
     }
 
-    function renderBusinessSection(title, note, body) {
+    function renderBusinessSection(title, note, body, options) {
+        const config = options || {};
+        const collapsed = Boolean(config.collapsed);
+        const collapseId = config.collapsible
+            ? `collapse-${hashString(String(config.sectionKey || title || 'section'))}`
+            : '';
+        const headAction = config.collapsible
+            ? renderSectionCollapseToggle(collapseId, collapsed)
+            : '';
+        const bodyContent = config.collapsible
+            ? `
+                <div class="collapse-block business-section-collapse${collapsed ? ' is-collapsed' : ''}" data-collapse-block="${collapseId}">
+                    <div class="collapse-block-body" id="${collapseId}"${collapsed ? ' hidden' : ''}>
+                        ${body}
+                    </div>
+                </div>
+            `
+            : body;
+
         return `
             <section class="business-section">
-                <div class="business-section-head">
-                    <div class="business-section-title">${escapeHtml(title)}</div>
-                    <div class="business-section-note">${escapeHtml(note)}</div>
+                <div class="business-section-head${config.collapsible ? ' is-collapsible' : ''}">
+                    <div class="business-section-heading">
+                        <div class="business-section-title-row">
+                            ${headAction}
+                            <div class="business-section-title">${escapeHtml(title)}</div>
+                        </div>
+                        <div class="business-section-note">${escapeHtml(note)}</div>
+                    </div>
                 </div>
-                ${body}
+                ${bodyContent}
             </section>
+        `;
+    }
+
+    function renderSectionCollapseToggle(targetId, collapsed) {
+        return `
+            <button
+                class="section-collapse-toggle"
+                type="button"
+                data-collapse-toggle="block"
+                aria-expanded="${collapsed ? 'false' : 'true'}"
+                aria-controls="${targetId}"
+            >
+                <span class="collapse-block-toggle" aria-hidden="true"></span>
+                <span class="section-collapse-text">${collapsed ? '展开' : '收起'}</span>
+            </button>
+        `;
+    }
+
+    function renderCollapsibleBlock(title, body, options) {
+        const config = options || {};
+        const collapsed = Boolean(config.collapsed);
+        const blockClassName = config.blockClassName ? ` ${config.blockClassName}` : '';
+        const blockKey = `collapse-${hashString(String(config.blockKey || title || 'block'))}`;
+
+        return `
+            <div class="collapse-block${blockClassName}${collapsed ? ' is-collapsed' : ''}" data-collapse-block="${blockKey}">
+                <button
+                    class="collapse-block-head"
+                    type="button"
+                    data-collapse-toggle="block"
+                    aria-expanded="${collapsed ? 'false' : 'true'}"
+                    aria-controls="${blockKey}"
+                >
+                    <span class="collapse-block-toggle" aria-hidden="true"></span>
+                    <span class="collapse-block-title">${escapeHtml(title || '明细')}</span>
+                </button>
+                <div class="collapse-block-body" id="${blockKey}"${collapsed ? ' hidden' : ''}>
+                    ${body}
+                </div>
+            </div>
         `;
     }
 
@@ -1076,6 +1466,22 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         });
     }
 
+    function handlePanelToggle(event) {
+        const collapseHead = event.target.closest('[data-collapse-toggle="block"]');
+        if (collapseHead) {
+            toggleCollapseBlock(collapseHead);
+            return;
+        }
+
+        const layoutToggle = event.target.closest('[data-component-toggle="layout"]');
+        if (layoutToggle) {
+            toggleComponentLayoutRows(layoutToggle);
+            return;
+        }
+
+        handleTreeToggle(event);
+    }
+
     function handleTreeToggle(event) {
         const head = event.target.closest('.tree-node-head');
         if (!head) {
@@ -1091,6 +1497,70 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         const isCollapsed = node.classList.toggle('is-collapsed');
         body.hidden = isCollapsed;
         head.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+    }
+
+    function toggleCollapseBlock(head) {
+        const bodyId = head.getAttribute('aria-controls');
+        const body = bodyId ? document.getElementById(bodyId) : null;
+        const block = body && body.closest('.collapse-block');
+        if (!block || !body) {
+            return;
+        }
+
+        const isCollapsed = block.classList.toggle('is-collapsed');
+        body.hidden = isCollapsed;
+        head.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+
+        const textNode = head.querySelector('.section-collapse-text');
+        if (textNode) {
+            textNode.textContent = isCollapsed ? '展开' : '收起';
+        }
+    }
+
+    function toggleComponentLayoutRows(button) {
+        const layoutKey = button.getAttribute('data-layout-key');
+        const row = button.closest('tr');
+        const table = row && row.closest('table');
+        if (!layoutKey || !row || !table) {
+            return;
+        }
+
+        const isCollapsed = row.classList.toggle('is-collapsed');
+        button.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+
+        Array.from(table.querySelectorAll('tbody tr')).forEach((tableRow) => {
+            if (tableRow === row) {
+                return;
+            }
+
+            const ancestorKeys = (tableRow.dataset.ancestorLayoutKeys || '').split(',').filter(Boolean);
+            if (!ancestorKeys.includes(layoutKey)) {
+                return;
+            }
+
+            const shouldHide = hasCollapsedAncestorLayout(tableRow, table);
+            tableRow.hidden = shouldHide;
+        });
+    }
+
+    function hasCollapsedAncestorLayout(row, table) {
+        const ancestorKeys = (row.dataset.ancestorLayoutKeys || '').split(',').filter(Boolean);
+        if (!ancestorKeys.length) {
+            return false;
+        }
+
+        return ancestorKeys.some((key) => {
+            const ancestorRow = table.querySelector(`tr[data-row-key="${cssEscapeValue(key)}"]`);
+            return ancestorRow && ancestorRow.classList.contains('is-collapsed');
+        });
+    }
+
+    function cssEscapeValue(value) {
+        if (window.CSS && typeof window.CSS.escape === 'function') {
+            return window.CSS.escape(value);
+        }
+
+        return String(value).replace(/["\\]/g, '\\$&');
     }
 
     function fillLoadingState() {
@@ -1150,11 +1620,14 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             formConfig: {
                 表单标题: '采购申请单',
                 '表单版本id（pk_temp）': params.pkBo,
-                主表字段数量: 2,
+                流程定义ID: 'mock-proc-def',
+                主表字段数量: 3,
                 子表数量: 1,
                 主表字段: [
-                    { 字段标题: '申请人', fieldId: 'applicant', columncode: '-', 组件类型: 'Employee', 必填: '是', 可见: '是', 隐藏: '否' },
-                    { 字段标题: '申请部门', fieldId: 'dept', columncode: '-', 组件类型: 'Department', 必填: '是', 可见: '是', 隐藏: '否' }
+                    { rowType: 'field', depth: 0, title: '申请人', fieldId: 'applicant', columncode: 'applicant_code', componentType: 'Employee', tablePathLabel: '主表直出区域', required: '是', visible: '是', invisible: '否' },
+                    { rowType: 'tableLayout', depth: 0, title: '申请基础信息表格', fieldId: '-', columncode: '-', componentType: 'TableLayout', tablePathLabel: '申请基础信息表格', childFieldCount: 2, required: '-', visible: '-', invisible: '-' },
+                    { rowType: 'field', depth: 1, title: '申请部门', fieldId: 'dept', columncode: 'dept_code', componentType: 'Department', tablePathLabel: '申请基础信息表格', required: '是', visible: '是', invisible: '否' },
+                    { rowType: 'field', depth: 1, title: '联系电话', fieldId: 'mobile', columncode: 'mobile_code', componentType: 'Mobile', tablePathLabel: '申请基础信息表格', required: '否', visible: '是', invisible: '否' }
                 ],
                 子表配置: [
                     {
@@ -1164,8 +1637,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                         组件类型: 'DataTable',
                         子字段数量: 2,
                         子字段明细: [
-                            { 字段标题: '物料名称', fieldId: 'itemName', columncode: '-', 组件类型: 'Input', 必填: '是', 可见: '是', 隐藏: '否' },
-                            { 字段标题: '数量', fieldId: 'qty', columncode: '-', 组件类型: 'Number', 必填: '是', 可见: '是', 隐藏: '否' }
+                            { rowType: 'tableLayout', depth: 0, title: '明细表格', fieldId: '-', columncode: '-', componentType: 'TableLayout', tablePathLabel: '明细表格', childFieldCount: 2, required: '-', visible: '-', invisible: '-' },
+                            { rowType: 'field', depth: 1, title: '物料名称', fieldId: 'itemName', columncode: 'item_name', componentType: 'Input', tablePathLabel: '明细表格', required: '是', visible: '是', invisible: '否' },
+                            { rowType: 'field', depth: 1, title: '数量', fieldId: 'qty', columncode: 'qty', componentType: 'Number', tablePathLabel: '明细表格', required: '是', visible: '是', invisible: '否' }
                         ]
                     }
                 ],

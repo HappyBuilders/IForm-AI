@@ -52,7 +52,10 @@
 
         elements.form.addEventListener('submit', handleSubmit);
         elements.form.addEventListener('reset', handleReset);
-        elements.environment.addEventListener('change', saveHandler);
+        elements.environment.addEventListener('change', () => {
+            syncEnvironmentDependentFields();
+            saveHandler();
+        });
         elements.formParamMode.addEventListener('change', () => {
             syncFormParamMode();
             saveHandler();
@@ -162,6 +165,12 @@
                 showToast('单据链接 URL 格式不正确', 'error');
                 return false;
             }
+
+            if (!doesBillUrlMatchEnvironment(data.billUrl, data.environment)) {
+                elements.billUrl.focus();
+                showToast('单据链接 URL 与当前所选环境不匹配，请检查环境或重新填写链接', 'error');
+                return false;
+            }
         }
 
         if (!data.authType) {
@@ -206,6 +215,8 @@
     }
 
     async function resolveFormParamsFromUrl(data) {
+        clearResolvedFormParams();
+
         const apiUrl = new URL(CONFIG.RESOLVE_URL_API, getProxyBase());
         apiUrl.searchParams.set('env', normalizeEnvironment(data.environment));
         apiUrl.searchParams.set('url', data.billUrl);
@@ -353,6 +364,49 @@
         elements.urlParamGroup.classList.toggle('is-hidden', isManual);
     }
 
+    function syncEnvironmentDependentFields() {
+        const clearedItems = [];
+        const formMode = normalizeFormParamMode(elements.formParamMode.value);
+
+        if (clearFieldValue(elements.yhtAccessToken)) {
+            clearedItems.push('yht_access_token');
+        }
+
+        if (formMode === 'url' && clearResolvedFormParams()) {
+            clearedItems.push('表单Id/单据Id');
+        }
+
+        if (clearFieldValue(elements.billUrl)) {
+            clearedItems.push('单据链接');
+        }
+
+        if (!clearedItems.length) {
+            return;
+        }
+
+        if (isTokenAuth(elements.authType.value)) {
+            elements.yhtAccessToken.focus();
+        }
+
+        showToast(`已切换环境，${clearedItems.join('、')}已清空，请按当前环境重新填写`, 'info');
+    }
+
+    function clearResolvedFormParams() {
+        const hadValue = Boolean(elements.pkBo.value || elements.pkBoins.value);
+        elements.pkBo.value = '';
+        elements.pkBoins.value = '';
+        return hadValue;
+    }
+
+    function clearFieldValue(element) {
+        if (!element || !element.value) {
+            return false;
+        }
+
+        element.value = '';
+        return true;
+    }
+
     function setAuthTypeValue(value) {
         elements.authType.value = normalizeAuthType(value);
     }
@@ -382,6 +436,41 @@
         };
 
         return mapping[value] || value;
+    }
+
+    function doesBillUrlMatchEnvironment(billUrl, environment) {
+        if (!billUrl || !environment || !isValidUrl(billUrl)) {
+            return true;
+        }
+
+        const expectedOrigin = getEnvironmentOrigin(environment);
+        if (!expectedOrigin) {
+            return true;
+        }
+
+        try {
+            return new URL(billUrl).origin === expectedOrigin;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function getEnvironmentOrigin(environment) {
+        const originMap = {
+            test: 'https://bip-test.yonyoucloud.com',
+            daily: 'https://bip-daily.yonyoucloud.com',
+            pre: 'https://bip-pre.yonyoucloud.com',
+            core1: 'https://c1.yonyoucloud.com',
+            core2: 'https://c2.yonyoucloud.com',
+            core3: 'https://c3.yonyoucloud.com',
+            core4: 'https://c4.yonyoucloud.com',
+            c1: 'https://c1.yonyoucloud.com',
+            c2: 'https://c2.yonyoucloud.com',
+            c3: 'https://c3.yonyoucloud.com',
+            c4: 'https://c4.yonyoucloud.com'
+        };
+
+        return originMap[environment] || '';
     }
 
     function setEnvironmentValue(value) {

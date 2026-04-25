@@ -6,12 +6,13 @@ IForm-AI H5 System - local HTTP server with lightweight proxy support.
 import http.server
 import json
 import os
+import re
 import socketserver
 import ssl
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, unquote
 
 PORT = 18080
 DIRECTORY = Path(__file__).parent.parent / "assets"
@@ -140,14 +141,19 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_error_response(400, '单据链接 URL 与所选环境不匹配')
                 return
 
-            redirect_url = self.fetch_redirect_location(source_url)
+            redirect_info = self.resolve_form_redirect(source_url)
+            redirect_url = redirect_info.get('redirectUrl')
+            form_id = redirect_info.get('formId')
+            form_instance_id = redirect_info.get('formInstanceId')
+            error_message = redirect_info.get('errorMessage')
+
             if not redirect_url:
                 self.send_error_response(502, '未获取到 302 目标地址')
                 return
 
-            redirect_params = parse_qs(urlparse(redirect_url).query)
-            form_id = self.get_first_query_value(redirect_params, 'formId')
-            form_instance_id = self.get_first_query_value(redirect_params, 'formInstanceId')
+            if error_message:
+                self.send_error_response(502, error_message)
+                return
 
             if not form_id or not form_instance_id:
                 self.send_error_response(502, '302 目标地址中缺少 formId 或 formInstanceId')
@@ -164,7 +170,63 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as error:
             self.send_error_response(500, f'解析表单参数失败: {error}')
 
-    def fetch_redirect_location(self, source_url):
+    def resolve_form_redirect(self, source_url):
+        current_url = source_url
+        last_url = source_url
+        max_hops = 8
+        last_error_message = ''
+
+        for _ in range(max_hops):
+            response_info = self.fetch_redirect_response(current_url)
+            redirect_url = response_info.get('redirectUrl') or current_url
+            last_url = redirect_url
+            last_error_message = response_info.get('errorMessage', '') or last_error_message
+            print(
+                '[resolve-form-params] '
+                f"status={response_info.get('statusCode')} "
+                f"isRedirect={response_info.get('isRedirect')} "
+                f"from={current_url} "
+                f"to={redirect_url}"
+            )
+            form_id, form_instance_id = self.extract_form_params_from_url(redirect_url)
+
+            if form_id and form_instance_id:
+                return {
+                    'redirectUrl': redirect_url,
+                    'formId': form_id,
+                    'formInstanceId': form_instance_id
+                }
+
+            body_form_id, body_form_instance_id, body_redirect_url = self.extract_form_params_from_text(
+                response_info.get('bodyText', '')
+            )
+            if body_form_id and body_form_instance_id:
+                return {
+                    'redirectUrl': body_redirect_url or redirect_url,
+                    'formId': body_form_id,
+                    'formInstanceId': body_form_instance_id
+                }
+
+            if not last_error_message:
+                last_error_message = self.detect_auth_error(
+                    response_info.get('statusCode'),
+                    redirect_url,
+                    response_info.get('bodyText', '')
+                )
+
+            if not response_info.get('isRedirect') or not response_info.get('redirectUrl'):
+                break
+
+            current_url = response_info.get('redirectUrl')
+
+        return {
+            'redirectUrl': last_url,
+            'formId': '',
+            'formInstanceId': '',
+            'errorMessage': last_error_message
+        }
+
+    def fetch_redirect_response(self, source_url):
         headers = self.collect_forward_headers()
         request = urllib.request.Request(source_url, headers=headers, method='GET')
         context = self.create_ssl_context()
@@ -176,12 +238,186 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         try:
             with opener.open(request, timeout=30) as response:
                 if response.status in REDIRECT_STATUS_CODES:
-                    return response.headers.get('Location')
-                return response.geturl()
+                    return {
+                        'isRedirect': True,
+                        'statusCode': response.status,
+                        'redirectUrl': self.resolve_redirect_url(source_url, response.headers.get('Location')),
+                        'bodyText': '',
+                        'errorMessage': ''
+                    }
+                response_body = response.read()
+                body_text = self.decode_response_body(response_body, response.headers.get_content_charset())
+                return {
+                    'isRedirect': False,
+                    'statusCode': response.status,
+                    'redirectUrl': response.geturl(),
+                    'bodyText': body_text,
+                    'errorMessage': self.detect_auth_error(response.status, response.geturl(), body_text)
+                }
         except urllib.error.HTTPError as error:
             if error.code in REDIRECT_STATUS_CODES:
-                return error.headers.get('Location')
+                return {
+                    'isRedirect': True,
+                    'statusCode': error.code,
+                    'redirectUrl': self.resolve_redirect_url(source_url, error.headers.get('Location')),
+                    'bodyText': '',
+                    'errorMessage': ''
+                }
+            error_body = ''
+            if error.fp:
+                try:
+                    error_body = self.decode_response_body(
+                        error.fp.read(),
+                        error.headers.get_content_charset() if error.headers else None
+                    )
+                except Exception:
+                    error_body = ''
+            error_message = self.detect_auth_error(error.code, source_url, error_body)
+            if error_message:
+                return {
+                    'isRedirect': False,
+                    'statusCode': error.code,
+                    'redirectUrl': source_url,
+                    'bodyText': error_body,
+                    'errorMessage': error_message
+                }
             raise
+
+    def extract_form_params_from_url(self, target_url):
+        if not target_url:
+            return '', ''
+
+        parsed_url = urlparse(target_url)
+        query_params = parse_qs(parsed_url.query)
+        form_id = self.get_first_query_value(query_params, 'formId', 'formid', 'pk_bo', 'pkBo')
+        form_instance_id = self.get_first_query_value(
+            query_params,
+            'formInstanceId',
+            'forminstanceid',
+            'pk_boins',
+            'pkBoins'
+        )
+
+        if form_id and form_instance_id:
+            return form_id, form_instance_id
+
+        fragment_query = parsed_url.fragment.split('?', 1)[1] if '?' in parsed_url.fragment else parsed_url.fragment
+        fragment_params = parse_qs(fragment_query)
+        form_id = form_id or self.get_first_query_value(fragment_params, 'formId', 'formid', 'pk_bo', 'pkBo')
+        form_instance_id = form_instance_id or self.get_first_query_value(
+            fragment_params,
+            'formInstanceId',
+            'forminstanceid',
+            'pk_boins',
+            'pkBoins'
+        )
+
+        if form_id and form_instance_id:
+            return form_id, form_instance_id
+
+        nested_values = []
+        for values in list(query_params.values()) + list(fragment_params.values()):
+            nested_values.extend(values)
+
+        for candidate in nested_values:
+            nested_form_id, nested_form_instance_id = self.extract_form_params_from_text(candidate)
+            if nested_form_id and nested_form_instance_id:
+                return nested_form_id, nested_form_instance_id
+
+        return form_id, form_instance_id
+
+    def extract_form_params_from_text(self, text):
+        if not text:
+            return '', '', ''
+
+        normalized_text = self.normalize_search_text(text)
+        form_id = self.search_param_in_text(normalized_text, 'formId', 'formid', 'pk_bo', 'pkBo')
+        form_instance_id = self.search_param_in_text(
+            normalized_text,
+            'formInstanceId',
+            'forminstanceid',
+            'pk_boins',
+            'pkBoins'
+        )
+        if form_id and form_instance_id:
+            return form_id, form_instance_id, ''
+
+        for candidate_url in re.findall(r'https?://[^\s"\'<>]+', normalized_text):
+            form_id, form_instance_id = self.extract_form_params_from_url(candidate_url)
+            if form_id and form_instance_id:
+                return form_id, form_instance_id, candidate_url
+
+        return '', '', ''
+
+    def search_param_in_text(self, text, *param_names):
+        patterns = [
+            r'{name}=([^&#"\'\\\s]+)',
+            r'["\']{name}["\']\s*:\s*["\']([^"\']+)["\']',
+            r'["\']{name}["\']\s*=\s*["\']([^"\']+)["\']',
+            r'\b{name}\b\s*:\s*["\']([^"\']+)["\']',
+            r'\b{name}\b\s*=\s*["\']([^"\']+)["\']'
+        ]
+
+        for param_name in param_names:
+            for pattern in patterns:
+                match = re.search(pattern.format(name=re.escape(param_name)), text, flags=re.IGNORECASE)
+                if match:
+                    return unquote(match.group(1))
+
+        return ''
+
+    def normalize_search_text(self, text):
+        normalized_text = text
+        for _ in range(2):
+            decoded_text = unquote(normalized_text)
+            if decoded_text == normalized_text:
+                break
+            normalized_text = decoded_text
+
+        return normalized_text.replace('\\/', '/')
+
+    def decode_response_body(self, body_bytes, charset):
+        if not body_bytes:
+            return ''
+
+        encoding = charset or 'utf-8'
+        try:
+            return body_bytes.decode(encoding, errors='ignore')
+        except LookupError:
+            return body_bytes.decode('utf-8', errors='ignore')
+
+    def detect_auth_error(self, status_code, final_url, body_text):
+        normalized_url = (final_url or '').lower()
+        normalized_body = (body_text or '').lower()
+
+        if status_code in (401, 403):
+            return 'yht_access_token 授权失效或无权限，请按当前环境重新填写后重试'
+
+        auth_markers = [
+            'login',
+            '登录',
+            '统一认证',
+            'cas',
+            'sso',
+            'unauthorized',
+            'forbidden',
+            'access denied',
+            '请登录',
+            '重新登录'
+        ]
+        if any(marker in normalized_url for marker in ['login', 'cas', 'sso']):
+            return '302 目标已跳转到登录页，当前环境的 yht_access_token 可能已失效，请重新填写后重试'
+
+        if any(marker.lower() in normalized_body for marker in auth_markers):
+            return '302 目标返回登录页或鉴权失败页面，当前环境的 yht_access_token 可能已失效，请重新填写后重试'
+
+        return ''
+
+    def resolve_redirect_url(self, source_url, redirect_url):
+        if not redirect_url:
+            return ''
+
+        return urljoin(source_url, redirect_url)
 
     def collect_forward_headers(self):
         headers = {}
@@ -208,9 +444,17 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         }
         return mapping.get(env, env)
 
-    def get_first_query_value(self, query_params, key):
-        values = query_params.get(key, [])
-        return values[0] if values else ''
+    def get_first_query_value(self, query_params, *keys):
+        lowered_params = {}
+        for key, values in (query_params or {}).items():
+            lowered_params.setdefault(str(key).lower(), values)
+
+        for key in keys:
+            values = lowered_params.get(str(key).lower(), [])
+            if values:
+                return values[0]
+
+        return ''
 
     def send_json_response(self, code, payload):
         self.send_response(code)

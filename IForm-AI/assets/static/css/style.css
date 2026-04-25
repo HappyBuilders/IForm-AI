@@ -696,6 +696,24 @@ body {
     border-bottom: 1px solid rgba(18, 74, 118, 0.1);
 }
 
+.business-section-head.is-collapsible {
+    align-items: center;
+}
+
+.business-section-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.business-section-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
 .business-section-title {
     color: var(--accent-1);
     font-size: 0.98rem;
@@ -705,6 +723,113 @@ body {
 .business-section-note {
     color: var(--text-sub);
     font-size: 0.82rem;
+}
+
+.collapse-block {
+    display: flex;
+    flex-direction: column;
+}
+
+.collapse-block-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 46px;
+    padding: 11px 16px;
+    border: 0;
+    border-bottom: 1px solid rgba(18, 74, 118, 0.08);
+    background: rgba(244, 249, 253, 0.92);
+    color: var(--text-main);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+}
+
+.collapse-block-head:hover {
+    background: #edf6fc;
+}
+
+.collapse-block-head:focus-visible {
+    outline: 2px solid rgba(47, 139, 199, 0.55);
+    outline-offset: -2px;
+}
+
+.collapse-block-toggle {
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid var(--accent-2);
+    border-bottom: 2px solid var(--accent-2);
+    transform: rotate(45deg);
+    transition: transform 0.18s ease;
+}
+
+.collapse-block.is-collapsed .collapse-block-toggle {
+    transform: rotate(-45deg);
+}
+
+.collapse-block-title {
+    color: #36556f;
+    font-size: 0.84rem;
+    font-weight: 700;
+}
+
+.collapse-block-body {
+    display: flex;
+    flex-direction: column;
+}
+
+.collapse-block.is-collapsed > .collapse-block-body {
+    display: none;
+}
+
+.business-section-collapse > .collapse-block-head {
+    background: rgba(246, 250, 253, 0.94);
+}
+
+.section-collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid rgba(21, 91, 148, 0.14);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.82);
+    color: #42617d;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    flex: none;
+}
+
+.section-collapse-toggle:hover {
+    background: #fff;
+}
+
+.section-collapse-toggle:focus-visible {
+    outline: 2px solid rgba(47, 139, 199, 0.55);
+    outline-offset: 1px;
+}
+
+.section-collapse-toggle[aria-expanded="false"] .collapse-block-toggle {
+    transform: rotate(-45deg);
+}
+
+.section-collapse-text {
+    line-height: 1;
+}
+
+.subtable-detail-block {
+    overflow: hidden;
+    border: 1px solid rgba(18, 74, 118, 0.09);
+    border-radius: 14px;
+    background: #fbfdff;
+}
+
+.subtable-detail-block > .collapse-block-head {
+    border-bottom-color: rgba(18, 74, 118, 0.06);
 }
 
 .business-table-wrap {
@@ -761,6 +886,177 @@ body {
 .business-table-detail tbody th {
     width: 80px;
     text-align: center;
+}
+
+.component-table {
+    min-width: 980px;
+}
+
+.component-row.is-layout-row td {
+    background: linear-gradient(90deg, rgba(21, 91, 148, 0.1), rgba(111, 200, 237, 0.06));
+    font-weight: 700;
+}
+
+.component-title-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.component-title-cell.depth-1 {
+    padding-left: 22px;
+}
+
+.component-title-cell.depth-2 {
+    padding-left: 44px;
+}
+
+.component-title-cell.depth-3 {
+    padding-left: 66px;
+}
+
+.component-title-cell.depth-4 {
+    padding-left: 88px;
+}
+
+.component-title-cell.depth-5,
+.component-title-cell.depth-6 {
+    padding-left: 110px;
+}
+
+.component-depth-line {
+    width: 14px;
+    height: 1px;
+    flex: none;
+    background: rgba(21, 91, 148, 0.35);
+}
+
+.component-row-toggle,
+.component-row-toggle-placeholder {
+    width: 18px;
+    height: 18px;
+    flex: none;
+}
+
+.component-row-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(21, 91, 148, 0.08);
+    cursor: pointer;
+}
+
+.component-row-toggle:hover {
+    background: rgba(21, 91, 148, 0.14);
+}
+
+.component-row-toggle:focus-visible {
+    outline: 2px solid rgba(47, 139, 199, 0.55);
+    outline-offset: 1px;
+}
+
+.component-row-toggle-icon {
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid var(--accent-2);
+    border-bottom: 2px solid var(--accent-2);
+    transform: rotate(45deg);
+    transition: transform 0.18s ease;
+}
+
+.component-row.is-collapsed .component-row-toggle-icon {
+    transform: rotate(-45deg);
+}
+
+.component-row-toggle-placeholder {
+    display: inline-block;
+}
+
+.component-kind {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.component-kind.is-layout {
+    background: rgba(21, 91, 148, 0.14);
+    color: var(--accent-1);
+}
+
+.component-name {
+    min-width: 0;
+    color: var(--text-main);
+    font-weight: 700;
+}
+
+.component-meta-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(21, 91, 148, 0.08);
+    color: #5b7489;
+    font-size: 0.74rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.subtable-config-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px;
+}
+
+.subtable-card {
+    overflow: hidden;
+    border: 1px solid rgba(18, 74, 118, 0.11);
+    border-radius: 16px;
+    background: #fff;
+}
+
+.subtable-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    background: #f6fbff;
+    border-bottom: 1px solid rgba(18, 74, 118, 0.08);
+}
+
+.subtable-card-title {
+    color: var(--accent-1);
+    font-size: 0.95rem;
+    font-weight: 800;
+}
+
+.subtable-card-meta {
+    color: var(--text-sub);
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.subtable-card-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.subtable-card-label {
+    color: #42617d;
+    font-size: 0.82rem;
+    font-weight: 700;
 }
 
 .tree-list {
@@ -1067,6 +1363,10 @@ body {
         min-width: 460px;
     }
 
+    .component-table {
+        min-width: 760px;
+    }
+
     .tree-list,
     .tree-node-body {
         padding: 12px;
@@ -1092,6 +1392,11 @@ body {
     .sub-level-block {
         margin-left: 0;
         padding-left: 14px;
+    }
+
+    .subtable-card-head {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
     .btn,
