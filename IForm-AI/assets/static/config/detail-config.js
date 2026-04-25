@@ -1,0 +1,64 @@
+window.IFormDetailConfig = {
+    requestTimeout: 30000,
+    storageKey: 'iform_ai_params',
+    environments: {
+        test: {
+            label: '测试',
+            baseUrl: 'https://bip-test.yonyoucloud.com'
+        },
+        daily: {
+            label: '日常',
+            baseUrl: 'https://bip-daily.yonyoucloud.com'
+        },
+        pre: {
+            label: '预发',
+            baseUrl: 'https://bip-pre.yonyoucloud.com'
+        },
+        core1: {
+            label: '核心1',
+            baseUrl: 'https://c1.yonyoucloud.com'
+        },
+        core2: {
+            label: '核心2',
+            baseUrl: 'https://c2.yonyoucloud.com'
+        },
+        core3: {
+            label: '核心3',
+            baseUrl: 'https://c3.yonyoucloud.com'
+        },
+        core4: {
+            label: '核心4',
+            baseUrl: 'https://c4.yonyoucloud.com'
+        },
+        shangkai: {
+            label: '商开',
+            baseUrl: ''
+        },
+        overseas: {
+            label: '海外',
+            baseUrl: ''
+        }
+    },
+    tabs: {
+        formConfig: {
+            title: '表单配置信息',
+            formConfigPathTemplate: '/yonbip-ec-iform/iform_ctr/rt_ctr/{pk_temp}/billVue.json'
+        },
+        document: {
+            title: '单据数据信息',
+            path: '/yonbip-ec-iform/iform_ctr/bill_ctr/getFormData'
+        },
+        approval: {
+            title: '流程审批信息',
+            path: '/yonbip-ec-iform/iform_ctr/bill_ctr/loadDataJson'
+        },
+        businessLog: {
+            title: '业务日志',
+            path: '/api/business/business-log'
+        },
+        jiraAnalysis: {
+            title: 'Jira问题分析',
+            path: '/api/business/jira-analysis'
+        }
+    }
+};

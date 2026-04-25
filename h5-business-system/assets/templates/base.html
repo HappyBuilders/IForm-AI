@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>{{page_title}} - H5 Business System</title>
+    
+    <!-- CSS -->
+    <link rel="stylesheet" href="../static/css/reset.css">
+    <link rel="stylesheet" href="../static/css/variables.css">
+    <link rel="stylesheet" href="../static/css/layout.css">
+    <link rel="stylesheet" href="../static/css/components.css">
+    
+    <!-- Page specific CSS -->
+    {{page_css}}
+</head>
+<body>
+    <!-- Main Container -->
+    <div id="app" class="app-container">
+        {{page_content}}
+    </div>
+    
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+    
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+    </div>
+    
+    <!-- JavaScript -->
+    <script src="../static/js/core.js"></script>
+    <script src="../static/js/api.js"></script>
+    <script src="../static/js/components.js"></script>
+    <script src="../static/js/router.js"></script>
+    
+    <!-- Page specific JS -->
+    {{page_js}}
+</body>
+</html>

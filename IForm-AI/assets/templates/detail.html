@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IForm-AI 详情页</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23155b94'/%3E%3Ctext x='32' y='41' font-size='28' text-anchor='middle' fill='white' font-family='Arial, sans-serif'%3EAI%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="../static/css/style.css?v=9">
+</head>
+<body class="page-detail">
+    <div class="container container-wide">
+        <header class="header header-left">
+            <div class="header-topbar">
+                <a class="back-link" href="./index.html">返回首页</a>
+                <span class="status-chip" id="requestStatus">准备加载</span>
+            </div>
+            <div class="detail-header-row">
+                <div>
+                    <h1 class="logo">IForm-AI</h1>
+                    <p class="subtitle">业务详情控制台</p>
+                </div>
+                <div class="detail-header-note">Desktop Workspace</div>
+            </div>
+        </header>
+
+        <main class="main-content detail-workspace">
+            <aside class="detail-sidebar glass-panel">
+                <div class="panel-head sidebar-head">
+                    <div>
+                        <h2 class="panel-title">请求参数</h2>
+                        <p class="panel-note">当前查询上下文</p>
+                    </div>
+                </div>
+
+                <div class="summary-grid summary-grid-sidebar" id="summaryGrid"></div>
+
+                <div class="sidebar-actions">
+                    <button type="button" class="btn btn-primary btn-inline" id="reloadBtn">重新加载</button>
+                    <a class="btn btn-secondary btn-inline" href="./index.html">修改参数</a>
+                </div>
+            </aside>
+
+            <section class="detail-content glass-panel">
+                <div class="detail-content-head">
+                    <div>
+                        <h2 class="panel-title">业务数据</h2>
+                        <p class="panel-note">按表单配置、单据、流程审批、日志与问题分析分区展示</p>
+                    </div>
+                </div>
+
+                <div class="tab-list tab-list-bar" role="tablist" aria-label="详情页签">
+                    <button type="button" class="tab-button is-active" data-tab="formConfig" role="tab" aria-selected="true">表单配置信息</button>
+                    <button type="button" class="tab-button" data-tab="document" role="tab" aria-selected="false">单据数据信息</button>
+                    <button type="button" class="tab-button" data-tab="approval" role="tab" aria-selected="false">流程审批信息</button>
+                    <button type="button" class="tab-button" data-tab="businessLog" role="tab" aria-selected="false">业务日志</button>
+                    <button type="button" class="tab-button" data-tab="jiraAnalysis" role="tab" aria-selected="false">Jira问题分析</button>
+                </div>
+
+                <div class="tab-panels detail-tab-panels">
+                    <section class="tab-panel is-active" data-panel="formConfig" role="tabpanel">
+                        <div class="panel-head">
+                            <h3 class="panel-title">表单配置信息</h3>
+                            <span class="panel-note">合并展示表单版本、模型结构、字段配置与布局信息等</span>
+                        </div>
+                        <div class="data-block" id="panel-formConfig"></div>
+                    </section>
+
+                    <section class="tab-panel" data-panel="document" role="tabpanel" hidden>
+                        <div class="panel-head">
+                            <h3 class="panel-title">单据数据信息</h3>
+                            <span class="panel-note">单据头、明细、扩展字段等</span>
+                        </div>
+                        <div class="data-block" id="panel-document"></div>
+                    </section>
+
+                    <section class="tab-panel" data-panel="approval" role="tabpanel" hidden>
+                        <div class="panel-head">
+                            <h3 class="panel-title">流程审批信息</h3>
+                            <span class="panel-note">节点、处理人、意见、时间线等</span>
+                        </div>
+                        <div class="data-block" id="panel-approval"></div>
+                    </section>
+
+                    <section class="tab-panel" data-panel="businessLog" role="tabpanel" hidden>
+                        <div class="panel-head">
+                            <h3 class="panel-title">业务日志</h3>
+                            <span class="panel-note">接口调用、业务操作、异常堆栈与链路追踪等</span>
+                        </div>
+                        <div class="data-block" id="panel-businessLog"></div>
+                    </section>
+
+                    <section class="tab-panel" data-panel="jiraAnalysis" role="tabpanel" hidden>
+                        <div class="panel-head">
+                            <h3 class="panel-title">Jira问题分析</h3>
+                            <span class="panel-note">关联问题、影响范围、处理建议与排查结论等</span>
+                        </div>
+                        <div class="data-block" id="panel-jiraAnalysis"></div>
+                    </section>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div id="toast" class="toast" style="display: none;">
+        <span class="toast-message"></span>
+    </div>
+
+    <script src="../static/config/detail-config.js?v=5"></script>
+    <script src="../static/js/detail.js?v=7"></script>
+</body>
+</html>

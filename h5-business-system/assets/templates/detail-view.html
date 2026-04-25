@@ -1,0 +1,145 @@
+<!-- Detail Page Template -->
+<div class="page detail-page">
+    <!-- Header -->
+    <header class="page-header">
+        <button class="btn-back" onclick="router.back()">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+        </button>
+        <h1 class="page-title">{{detail_title}}</h1>
+        <button class="btn-edit" onclick="detailView.edit()">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+        </button>
+    </header>
+    
+    <!-- Content -->
+    <div class="page-content" id="detail-content">
+        <!-- Loading skeleton -->
+        <div class="skeleton-detail" id="skeleton-detail">
+            <div class="skeleton-hero"></div>
+            <div class="skeleton-section">
+                <div class="skeleton-line"></div>
+                <div class="skeleton-line short"></div>
+            </div>
+        </div>
+        
+        <!-- Content will be rendered here -->
+        <div class="detail-render hidden" id="detail-render"></div>
+    </div>
+    
+    <!-- Bottom Action -->
+    <div class="bottom-action" id="bottom-action">
+        <button class="btn-primary btn-block" onclick="detailView.primaryAction()">
+            {{primary_action_text}}
+        </button>
+    </div>
+</div>
+
+<script>
+// Detail View Component
+const detailView = {
+    entity: '{{entity}}',
+    id: null,
+    data: null,
+    
+    async init() {
+        // Get ID from route params
+        this.id = router.currentRoute?.params?.id;
+        if (!this.id) {
+            toast.error('无效的数据ID');
+            router.back();
+            return;
+        }
+        
+        await this.loadData();
+    },
+    
+    async loadData() {
+        document.getElementById('skeleton-detail').classList.remove('hidden');
+        document.getElementById('detail-render').classList.add('hidden');
+        
+        try {
+            const result = await api.get(`/${this.entity}/detail/${this.id}`);
+            
+            if (result.success) {
+                this.data = result.data;
+                this.render(this.data);
+            } else {
+                toast.error('加载失败');
+            }
+        } catch (error) {
+            toast.error('加载失败，请重试');
+        } finally {
+            document.getElementById('skeleton-detail').classList.add('hidden');
+            document.getElementById('detail-render').classList.remove('hidden');
+        }
+    },
+    
+    render(data) {
+        const container = document.getElementById('detail-render');
+        
+        // Override this method for custom rendering
+        container.innerHTML = `
+            <div class="hero-section">
+                <h2>${data.name || data.title || '未命名'}</h2>
+                <p class="hero-subtitle">${data.subtitle || ''}</p>
+            </div>
+            
+            <div class="info-section">
+                <h2>基本信息</h2>
+                <div class="info-grid">
+                    ${this.renderInfoItems(data)}
+                </div>
+            </div>
+        `;
+    },
+    
+    renderInfoItems(data) {
+        // Define fields to display
+        const fields = [
+            { key: 'id', label: 'ID' },
+            { key: 'status', label: '状态' },
+            { key: 'created_at', label: '创建时间', format: 'date' },
+            { key: 'updated_at', label: '更新时间', format: 'date' },
+        ];
+        
+        return fields.map(field => {
+            const value = data[field.key];
+            let displayValue = value;
+            
+            if (field.format === 'date' && value) {
+                displayValue = utils.formatDate(value);
+            }
+            
+            if (value === undefined || value === null || value === '') {
+                displayValue = '-';
+            }
+            
+            return `
+                <div class="info-item">
+                    <label>${field.label}</label>
+                    <value>${displayValue}</value>
+                </div>
+            `;
+        }).join('');
+    },
+    
+    edit() {
+        router.navigate(`/${this.entity}/edit/${this.id}`);
+    },
+    
+    primaryAction() {
+        // Override for custom primary action
+        console.log('Primary action clicked');
+    },
+};
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    detailView.init();
+});
+</script>

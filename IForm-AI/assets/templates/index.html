@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IForm-AI 表单业务系统</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23155b94'/%3E%3Ctext x='32' y='41' font-size='28' text-anchor='middle' fill='white' font-family='Arial, sans-serif'%3EAI%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="../static/css/style.css?v=9">
+</head>
+<body class="page-home">
+    <div class="container container-home">
+        <header class="header header-home">
+            <div class="hero-badge">Web Console</div>
+            <h1 class="logo">IForm-AI</h1>
+            <p class="subtitle">智能业务表单系统</p>
+        </header>
+
+        <main class="main-content home-main">
+            <section class="form-shell">
+                <aside class="intro-panel glass-panel">
+                    <div class="panel-head panel-head-compact">
+                        <h2 class="panel-title">系统说明</h2>
+                    </div>
+                    <p class="intro-title">统一配置表单参数和授权信息</p>
+                    <p class="intro-text">填写表单参数、授权参数和环境后，系统会进入详情页，并按配置文件中的接口路径加载表单配置、单据、流程审批、业务日志与问题分析信息。</p>
+
+                    <div class="intro-list">
+                        <div class="intro-item">
+                            <span class="intro-key">运行方式</span>
+                            <span class="intro-value">本地 Web</span>
+                        </div>
+                        <div class="intro-item">
+                            <span class="intro-key">授权方式</span>
+                            <span class="intro-value">SSO / yht_access_token</span>
+                        </div>
+                        <div class="intro-item">
+                            <span class="intro-key">表单参数</span>
+                            <span class="intro-value">手动录入 / 单据链接解析</span>
+                        </div>
+                    </div>
+                </aside>
+
+                <section class="form-card form-card-wide">
+                    <h2 class="form-title">参数配置</h2>
+                    <form id="businessForm" class="form form-desktop">
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="ytenant_id" class="form-label">
+                                    <span class="label-text">租户 ID（ytenant_id）</span>
+                                </label>
+                                <input type="text" id="ytenant_id" name="ytenant_id" class="form-input" placeholder="请输入租户 ID">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="environment" class="form-label">
+                                    <span class="label-text">环境</span>
+                                    <span class="required">*</span>
+                                </label>
+                                <select id="environment" name="environment" class="form-input form-select" required>
+                                    <option value="test">测试</option>
+                                    <option value="daily">日常</option>
+                                    <option value="pre">预发</option>
+                                    <option value="core1">核心1</option>
+                                    <option value="core2">核心2</option>
+                                    <option value="core3">核心3</option>
+                                    <option value="core4">核心4</option>
+                                    <option value="shangkai">商开</option>
+                                    <option value="overseas">海外</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group form-group-full">
+                                <label for="formParamMode" class="form-label">
+                                    <span class="label-text">表单参数设置方式</span>
+                                    <span class="required">*</span>
+                                </label>
+                                <select id="formParamMode" name="formParamMode" class="form-input form-select" required>
+                                    <option value="manual">表单Id + 单据Id</option>
+                                    <option value="url">单据链接 URL</option>
+                                </select>
+                            </div>
+
+                            <div class="form-grid form-grid-nested sub-level-block" id="manualParamGroup">
+                                <div class="form-group">
+                                    <label for="pkBo" class="form-label">
+                                        <span class="label-text">表单Id（pkBo）</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <input type="text" id="pkBo" name="pkBo" class="form-input" placeholder="请输入表单Id">
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="pkBoins" class="form-label">
+                                        <span class="label-text">单据Id（pkBoins）</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <input type="text" id="pkBoins" name="pkBoins" class="form-input" placeholder="请输入单据Id">
+                                </div>
+                            </div>
+
+                            <div class="form-group form-group-full sub-level-block is-hidden" id="urlParamGroup">
+                                <label for="billUrl" class="form-label">
+                                    <span class="label-text">单据链接 URL</span>
+                                    <span class="required">*</span>
+                                </label>
+                                <input type="url" id="billUrl" name="billUrl" class="form-input" placeholder="请输入单据链接 URL">
+                                <div class="field-note">系统会带上 `yht_access_token` 请求该链接，解析 302 目标地址中的 `formId` 和 `formInstanceId`，并自动回填到表单参数。</div>
+                            </div>
+
+                            <div class="form-group form-group-full">
+                                <label for="authType" class="form-label">
+                                    <span class="label-text">授权方式</span>
+                                    <span class="required">*</span>
+                                </label>
+                                <select id="authType" name="authType" class="form-input form-select" required>
+                                    <option value="sso">sso授权</option>
+                                    <option value="yht_access_token">yht_access_token 授权</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <section class="auth-block sub-level-block" id="ssoAuthGroup">
+                            <div class="auth-block-head">
+                                <div class="auth-block-title">SSO 授权参数</div>
+                                <div class="auth-block-note">用于通过 SSO 方式调用业务系统接口</div>
+                            </div>
+                            <div class="form-grid">
+                                <div class="form-group form-group-full">
+                                    <label for="ssoUrl" class="form-label">
+                                        <span class="label-text">SSO 链接地址（ssoUrl）</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <input type="url" id="ssoUrl" name="ssoUrl" class="form-input" placeholder="请输入 SSO 链接地址">
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="secretKey" class="form-label">
+                                        <span class="label-text">密钥（secretKey）</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <input type="text" id="secretKey" name="secretKey" class="form-input" placeholder="请输入密钥">
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="linkPassword" class="form-label">
+                                        <span class="label-text">链接密码（linkPassword）</span>
+                                    </label>
+                                    <input type="text" id="linkPassword" name="linkPassword" class="form-input" placeholder="请输入链接密码，没有可不填">
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="auth-block sub-level-block is-hidden" id="tokenAuthGroup">
+                            <div class="auth-block-head">
+                                <div class="auth-block-title">yht_access_token 授权参数</div>
+                                <div class="auth-block-note">用于通过 yht_access_token 方式调用业务系统接口</div>
+                            </div>
+                            <div class="form-grid">
+                                <div class="form-group form-group-full">
+                                    <label for="yhtAccessToken" class="form-label">
+                                        <span class="label-text">yht_access_token</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <input type="text" id="yhtAccessToken" name="yht_access_token" class="form-input" placeholder="请输入 yht_access_token">
+                                </div>
+                            </div>
+                        </section>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">
+                                <span class="btn-text">进入详情页</span>
+                                <span class="btn-loading" style="display: none;">
+                                    <span class="spinner"></span>
+                                    处理中...
+                                </span>
+                            </button>
+                            <button type="reset" class="btn btn-secondary">重置参数</button>
+                        </div>
+                    </form>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <div id="toast" class="toast" style="display: none;">
+        <span class="toast-message"></span>
+    </div>
+
+    <script src="../static/js/app.js?v=9"></script>
+</body>
+</html>
