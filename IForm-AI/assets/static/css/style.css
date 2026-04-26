@@ -389,6 +389,13 @@ body {
     color: #98a9b8;
 }
 
+.form-textarea {
+    min-height: 112px;
+    padding: 14px 16px;
+    resize: vertical;
+    line-height: 1.6;
+}
+
 .form-select {
     appearance: none;
     -webkit-appearance: none;
@@ -435,6 +442,36 @@ body {
 .auth-block-note {
     color: var(--text-sub);
     font-size: 0.88rem;
+}
+
+.jira-control-block {
+    margin-bottom: 18px;
+}
+
+.jira-control-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.jira-recent-issues-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.jira-inline-detail-block {
+    border: 1px solid rgba(18, 74, 118, 0.08);
+    border-radius: 14px;
+    background: #fbfdff;
+}
+
+.btn-mini {
+    min-height: 34px;
+    min-width: 92px;
+    padding: 0 14px;
+    border-radius: 10px;
+    font-size: 0.84rem;
 }
 
 .form-actions {

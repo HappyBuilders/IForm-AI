@@ -23,6 +23,7 @@
         ytenantId: document.getElementById('ytenant_id'),
         pkBo: document.getElementById('pkBo'),
         pkBoins: document.getElementById('pkBoins'),
+        jiraIssueKey: document.getElementById('jiraIssueKey'),
         billUrl: document.getElementById('billUrl'),
         ssoUrl: document.getElementById('ssoUrl'),
         secretKey: document.getElementById('secretKey'),
@@ -67,6 +68,7 @@
         elements.ytenantId.addEventListener('input', saveHandler);
         elements.pkBo.addEventListener('input', saveHandler);
         elements.pkBoins.addEventListener('input', saveHandler);
+        elements.jiraIssueKey.addEventListener('input', saveHandler);
         elements.billUrl.addEventListener('input', saveHandler);
         elements.ssoUrl.addEventListener('input', saveHandler);
         elements.secretKey.addEventListener('input', saveHandler);
@@ -118,6 +120,7 @@
             ytenant_id: elements.ytenantId.value.trim(),
             pkBo: elements.pkBo.value.trim(),
             pkBoins: elements.pkBoins.value.trim(),
+            jiraIssueKey: elements.jiraIssueKey.value.trim(),
             billUrl: elements.billUrl.value.trim(),
             ssoUrl: elements.ssoUrl.value.trim(),
             secretKey: elements.secretKey.value.trim(),
@@ -291,6 +294,7 @@
             ytenant_id: elements.ytenantId,
             pkBo: elements.pkBo,
             pkBoins: elements.pkBoins,
+            jiraIssueKey: elements.jiraIssueKey,
             billUrl: elements.billUrl,
             ssoUrl: elements.ssoUrl,
             secretKey: elements.secretKey,
@@ -331,6 +335,7 @@
             if (data.ytenant_id) elements.ytenantId.value = data.ytenant_id;
             if (data.pkBo) elements.pkBo.value = data.pkBo;
             if (data.pkBoins) elements.pkBoins.value = data.pkBoins;
+            if (data.jiraIssueKey) elements.jiraIssueKey.value = data.jiraIssueKey;
             if (data.billUrl) elements.billUrl.value = data.billUrl;
             if (data.ssoUrl) elements.ssoUrl.value = data.ssoUrl;
             if (data.secretKey) elements.secretKey.value = data.secretKey;

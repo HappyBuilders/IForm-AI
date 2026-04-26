@@ -534,3 +534,60 @@ window.IFormDetailConfig = {
 3. `流程环节信息` must be displayed before `审批记录` in the approval-tab tree details.
 4. The old `流程轨迹` presentation should not be rendered once `流程环节信息` is used as the activity summary.
 5. `historicActivityInstances` must preserve backend order and must not be deduplicated on the client, even when multiple entries share the same activity id or activity name.
+
+### 14.6 Jira Analysis Effective Scope
+
+1. `Jira问题分析` is no longer treated as mock-only content in the current phase; it is connected through a dedicated local proxy to the Jira system.
+2. The Jira system base target is fixed and does not follow the selected homepage environment.
+3. Jira requests must not use `yht_access_token`; they must use a Jira session `Cookie`.
+4. The browser client must send Jira auth through `x-jira-cookie` to the local proxy, and the proxy must convert it to the real `Cookie` header before forwarding.
+5. The proxy endpoints are:
+   - `POST /api/jira/issue-table`
+   - `GET /api/jira/issue-detail`
+
+### 14.7 Jira Analysis Input And Storage Rules
+
+1. The homepage must provide an optional `Jira工单号` input and carry it to the detail page.
+2. `Jira系统Cookie` must only be entered and maintained inside the `Jira问题分析` tab.
+3. `Jira系统Cookie` must not be written into the detail-page URL query.
+4. `Jira系统Cookie` must not be shown in the top summary area.
+5. `Jira系统Cookie` should be stored only in `sessionStorage` for the current browser session.
+
+### 14.8 Jira Analysis Loading Strategy
+
+1. `Jira问题分析` must not block the initial rendering of `表单配置信息`, `单据数据信息`, `流程审批信息`, and `业务日志`.
+2. The detail page should load the core tabs first and then load the Jira tab asynchronously.
+3. Missing Jira cookie, missing Jira issue key, or Jira auth failure must only affect the Jira tab itself.
+
+### 14.9 Jira Analysis UI Structure
+
+1. The `Jira问题分析` tab should render these sections in order:
+   - `当前工单基础信息`
+   - `工单详细内容`
+   - `相似场景工单列表`
+   - `智能分析预留`
+   - `近期工单列表`
+   - `原始返回数据`
+2. The old `当前工单概述` block must not be rendered.
+3. The old `关联工单列表` label must be replaced with `近期工单列表`.
+4. `相似场景工单列表` is a reserved independent area for future skill / agent / LLM results and must not reuse the recent-issue list payload.
+5. `近期工单列表` must be displayed below `智能分析预留`.
+
+### 14.10 Jira Field Parsing Rules
+
+1. `当前工单基础信息` must not display `查询结果总数`.
+2. `当前工单基础信息` must additionally surface:
+   - `剩余处理时长`
+   - `SOP单据号`
+   - `外部系统编号`
+3. The old `当前工单详细字段` label must be replaced with `工单详细内容`.
+4. `到期日` should be rendered as `YYYY-MM-DD HH:mm` when time exists, otherwise `YYYY-MM-DD`.
+5. `解决方案` must be extracted only from the field whose `label` is exactly `解决方案`.
+6. The client must not fall back to `AI处理结果`, `处理方案`, `建议措施`, or other nearby labels when `解决方案` is absent.
+
+### 14.11 Jira Recent Issue Detail Interaction
+
+1. Each row in `近期工单列表` must provide a `查看详情` action.
+2. Clicking `查看详情` must load that row's Jira detail payload through the same detail proxy endpoint.
+3. The recent-issue detail area must include the parsed `解决方案` field.
+4. After rendering the recent-issue detail area, the page must auto-scroll to that area so users do not need to manually search for it in a long page.

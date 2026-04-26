@@ -15,12 +15,30 @@
             document: { title: '单据数据信息', path: '/yonbip-ec-iform/iform_ctr/bill_ctr/getFormData' },
             approval: { title: '流程审批信息', path: '/yonbip-ec-iform/iform_ctr/bill_ctr/loadDataJson' },
             businessLog: { title: '业务日志', path: '/api/business/business-log' },
-            jiraAnalysis: { title: 'Jira问题分析', path: '/api/business/jira-analysis' }
+            jiraAnalysis: {
+                title: 'Jira问题分析',
+                proxyBasePath: '/api/jira',
+                issueTablePath: '/rest/issueNav/1/issueTable',
+                issueDetailPath: '/secure/AjaxIssueEditAction!default.jspa',
+                issueBrowsePathTemplate: '/browse/{issueKey}',
+                jqlTemplate: 'issueKey = {issueKey} order by created DESC',
+                listRequest: {
+                    startIndex: '0',
+                    layoutKey: 'split-view'
+                },
+                detailFieldWhitelist: []
+            }
         }
     };
 
     const CONFIG = mergeConfig(window.IFormDetailConfig || {});
     const TAB_KEYS = ['formConfig', 'document', 'approval', 'businessLog', 'jiraAnalysis'];
+    const PRIMARY_TAB_KEYS = ['formConfig', 'document', 'approval', 'businessLog'];
+    const JIRA_TAB_KEY = 'jiraAnalysis';
+    const JIRA_COOKIE_STORAGE_KEY = CONFIG.storageKey + '_jira_cookie';
+    let currentParams = null;
+    let currentJiraAnalysisData = null;
+    let currentLoadSequence = 0;
 
     const elements = {
         summaryGrid: document.getElementById('summaryGrid'),
@@ -36,26 +54,34 @@
             approval: document.getElementById('panel-approval'),
             businessLog: document.getElementById('panel-businessLog'),
             jiraAnalysis: document.getElementById('panel-jiraAnalysis')
-        }
+        },
+        jiraIssueKeyInput: document.getElementById('jiraIssueKeyInput'),
+        jiraCookieInput: document.getElementById('jiraCookieInput'),
+        jiraLoadBtn: document.getElementById('jiraLoadBtn'),
+        jiraCookieClearBtn: document.getElementById('jiraCookieClearBtn')
     };
 
     function init() {
         bindEvents();
 
-        const params = getRequestParams();
-        if (!params) {
+        currentParams = getRequestParams();
+        hydrateJiraControls(currentParams);
+
+        if (!currentParams) {
             renderMissingParams();
             return;
         }
 
-        renderSummary(params);
-        loadAllTabs(params);
+        renderSummary(currentParams);
+        loadAllTabs(currentParams);
     }
 
     function bindEvents() {
         elements.reloadBtn.addEventListener('click', () => {
             const params = getRequestParams();
             if (params) {
+                currentParams = params;
+                hydrateJiraControls(currentParams);
                 loadAllTabs(params, true);
             }
         });
@@ -67,6 +93,22 @@
         elements.tabPanels.forEach((panel) => {
             panel.addEventListener('click', handlePanelToggle);
         });
+
+        if (elements.jiraIssueKeyInput) {
+            elements.jiraIssueKeyInput.addEventListener('input', handleJiraIssueKeyInput);
+        }
+
+        if (elements.jiraCookieInput) {
+            elements.jiraCookieInput.addEventListener('input', handleJiraCookieInput);
+        }
+
+        if (elements.jiraLoadBtn) {
+            elements.jiraLoadBtn.addEventListener('click', handleJiraLoadClick);
+        }
+
+        if (elements.jiraCookieClearBtn) {
+            elements.jiraCookieClearBtn.addEventListener('click', handleJiraCookieClearClick);
+        }
     }
 
     function getRequestParams() {
@@ -79,6 +121,7 @@
             ytenant_id: url.searchParams.get('ytenant_id') || '',
             pkBo: url.searchParams.get('pkBo') || '',
             pkBoins: url.searchParams.get('pkBoins') || '',
+            jiraIssueKey: url.searchParams.get('jiraIssueKey') || '',
             ssoUrl: url.searchParams.get('ssoUrl') || '',
             secretKey: url.searchParams.get('secretKey') || '',
             linkPassword: url.searchParams.get('linkPassword') || '',
@@ -126,14 +169,19 @@
         setStatus('加载中', 'is-loading');
         fillLoadingState();
 
+        const loadSequence = ++currentLoadSequence;
         const runtimeContext = { shared: {} };
-        const results = await Promise.allSettled(
-            TAB_KEYS.map((tabKey) => requestTabData(tabKey, params, environmentConfig.baseUrl, runtimeContext))
+        const primaryResults = await Promise.allSettled(
+            PRIMARY_TAB_KEYS.map((tabKey) => requestTabData(tabKey, params, environmentConfig.baseUrl, runtimeContext))
         );
 
+        if (loadSequence !== currentLoadSequence) {
+            return;
+        }
+
         let successCount = 0;
-        results.forEach((result, index) => {
-            const tabKey = TAB_KEYS[index];
+        primaryResults.forEach((result, index) => {
+            const tabKey = PRIMARY_TAB_KEYS[index];
             if (result.status === 'fulfilled') {
                 elements.panels[tabKey].innerHTML = renderTabValue(tabKey, result.value);
                 successCount += 1;
@@ -142,22 +190,42 @@
             }
         });
 
-        if (successCount === TAB_KEYS.length) {
-            setStatus('加载完成', 'is-success');
+        if (successCount === PRIMARY_TAB_KEYS.length) {
+            setStatus('核心页签已加载', 'is-success');
             if (!silent) {
-                showToast('详情数据加载成功', 'success');
+                showToast('表单相关页签已优先加载', 'success');
             }
-            return;
-        }
-
-        if (successCount > 0) {
+        } else if (successCount > 0) {
             setStatus('部分成功', 'is-loading');
             showToast('部分页签加载失败，请检查配置或接口', 'error');
-            return;
+        } else {
+            setStatus('加载失败', 'is-error');
+            showToast('详情数据加载失败，请检查配置或接口', 'error');
         }
 
-        setStatus('加载失败', 'is-error');
-        showToast('详情数据加载失败，请检查配置或接口', 'error');
+        loadJiraTabAsync(params, runtimeContext, loadSequence, successCount);
+    }
+
+    async function loadJiraTabAsync(params, runtimeContext, loadSequence, primarySuccessCount) {
+        try {
+            const jiraValue = await requestJiraAnalysisData(params, runtimeContext);
+            if (loadSequence !== currentLoadSequence) {
+                return;
+            }
+
+            elements.panels[JIRA_TAB_KEY].innerHTML = renderTabValue(JIRA_TAB_KEY, jiraValue);
+            const isPending = jiraValue && jiraValue.state === 'pending';
+
+            if (primarySuccessCount === PRIMARY_TAB_KEYS.length && !isPending) {
+                setStatus('加载完成', 'is-success');
+            }
+        } catch (error) {
+            if (loadSequence !== currentLoadSequence) {
+                return;
+            }
+
+            elements.panels[JIRA_TAB_KEY].innerHTML = renderErrorBlock(error);
+        }
     }
 
     async function requestTabData(tabKey, params, baseUrl, runtimeContext) {
@@ -169,8 +237,9 @@
             case 'approval':
                 return requestApprovalData(params, baseUrl, runtimeContext);
             case 'businessLog':
-            case 'jiraAnalysis':
                 return buildMockTabData(tabKey, params);
+            case 'jiraAnalysis':
+                return requestJiraAnalysisData(params, runtimeContext);
             default:
                 throw new Error('未知页签: ' + tabKey);
         }
@@ -277,6 +346,42 @@
     async function requestApprovalData(params, baseUrl, runtimeContext) {
         const normalized = await ensureApprovalParsed(params, baseUrl, runtimeContext);
         return buildApprovalRenderData(normalized);
+    }
+
+    async function requestJiraAnalysisData(params, runtimeContext, options) {
+        const requestOptions = options || {};
+        const jiraParams = getJiraRuntimeParams(params);
+
+        if (!jiraParams.issueKey) {
+            return buildJiraPendingState('请先填写 Jira工单号，再加载 Jira 数据', params, jiraParams);
+        }
+
+        if (!jiraParams.cookie) {
+            return buildJiraPendingState('请先填写 Jira系统Cookie，再加载 Jira 数据', params, jiraParams);
+        }
+
+        const forceReload = Boolean(requestOptions.forceReload);
+        if (!forceReload && runtimeContext && runtimeContext.shared && runtimeContext.shared.jiraAnalysisData) {
+            return runtimeContext.shared.jiraAnalysisData;
+        }
+
+        const issueTableRaw = await requestJiraIssueTable(jiraParams);
+        const issueTable = normalizeJiraIssueTableResponse(issueTableRaw);
+        const currentIssue = findCurrentJiraIssue(issueTable, jiraParams.issueKey);
+
+        if (!currentIssue) {
+            throw new Error(`未在 Jira 查询结果中匹配到工单 ${jiraParams.issueKey}`);
+        }
+
+        const issueDetailRaw = await requestJiraIssueDetail(currentIssue, jiraParams);
+        const issueDetail = normalizeJiraIssueDetailResponse(issueDetailRaw);
+        const renderData = buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail);
+
+        if (runtimeContext && runtimeContext.shared) {
+            runtimeContext.shared.jiraAnalysisData = renderData;
+        }
+
+        return renderData;
     }
 
     async function ensureApprovalParsed(params, baseUrl, runtimeContext) {
@@ -497,6 +602,124 @@
         renderSummary(params);
     }
 
+    function hydrateJiraControls(params) {
+        if (elements.jiraIssueKeyInput) {
+            elements.jiraIssueKeyInput.value = params && params.jiraIssueKey ? params.jiraIssueKey : '';
+        }
+
+        if (elements.jiraCookieInput) {
+            elements.jiraCookieInput.value = loadJiraCookieFromStorage();
+        }
+    }
+
+    function handleJiraIssueKeyInput() {
+        const nextValue = normalizeJiraIssueKey(elements.jiraIssueKeyInput ? elements.jiraIssueKeyInput.value : '');
+        if (elements.jiraIssueKeyInput && elements.jiraIssueKeyInput.value !== nextValue) {
+            elements.jiraIssueKeyInput.value = nextValue;
+        }
+
+        if (!currentParams) {
+            return;
+        }
+
+        currentParams.jiraIssueKey = nextValue;
+        saveParamsToStorage(currentParams);
+        renderSummary(currentParams);
+    }
+
+    function handleJiraCookieInput() {
+        const normalizedCookie = normalizeJiraCookieValue(elements.jiraCookieInput ? elements.jiraCookieInput.value : '');
+        if (elements.jiraCookieInput && elements.jiraCookieInput.value !== normalizedCookie) {
+            elements.jiraCookieInput.value = normalizedCookie;
+        }
+        saveJiraCookieToStorage(normalizedCookie);
+    }
+
+    async function handleJiraLoadClick() {
+        const params = currentParams || getRequestParams();
+        if (!params) {
+            showToast('当前缺少详情页请求参数，请返回首页重新提交', 'error');
+            return;
+        }
+
+        const jiraIssueKey = normalizeJiraIssueKey(elements.jiraIssueKeyInput ? elements.jiraIssueKeyInput.value : '');
+        const jiraCookie = normalizeJiraCookieValue(elements.jiraCookieInput ? elements.jiraCookieInput.value : '');
+
+        if (elements.jiraIssueKeyInput && elements.jiraIssueKeyInput.value !== jiraIssueKey) {
+            elements.jiraIssueKeyInput.value = jiraIssueKey;
+        }
+
+        if (elements.jiraCookieInput && elements.jiraCookieInput.value !== jiraCookie) {
+            elements.jiraCookieInput.value = jiraCookie;
+        }
+
+        params.jiraIssueKey = jiraIssueKey;
+        currentParams = params;
+        saveParamsToStorage(currentParams);
+        saveJiraCookieToStorage(jiraCookie);
+        renderSummary(currentParams);
+
+        if (!jiraIssueKey) {
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(
+                buildJiraPendingState('请先填写 Jira工单号，再加载 Jira 数据', currentParams, { issueKey: '', cookie: jiraCookie })
+            );
+            showToast('请填写 Jira工单号', 'error');
+            return;
+        }
+
+        if (!jiraCookie) {
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(
+                buildJiraPendingState('请先填写 Jira系统Cookie，再加载 Jira 数据', currentParams, { issueKey: jiraIssueKey, cookie: '' })
+            );
+            showToast('请填写 Jira系统Cookie', 'error');
+            return;
+        }
+
+        elements.jiraLoadBtn.disabled = true;
+        elements.panels.jiraAnalysis.innerHTML = '<div class="empty-state">正在加载 Jira 数据，请稍候...</div>';
+
+        try {
+            const data = await requestJiraAnalysisData(currentParams, { shared: {} }, { forceReload: true });
+            currentJiraAnalysisData = data;
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(data);
+            showToast('Jira 数据加载完成', 'success');
+        } catch (error) {
+            currentJiraAnalysisData = null;
+            elements.panels.jiraAnalysis.innerHTML = renderErrorBlock(error);
+            showToast(error.message || 'Jira 数据加载失败', 'error');
+        } finally {
+            elements.jiraLoadBtn.disabled = false;
+        }
+    }
+
+    function handleJiraCookieClearClick() {
+        clearJiraCookieFromStorage();
+        if (elements.jiraCookieInput) {
+            elements.jiraCookieInput.value = '';
+            elements.jiraCookieInput.focus();
+        }
+        showToast('Jira 系统 Cookie 已清空', 'info');
+    }
+
+    function getJiraRuntimeParams(params) {
+        return {
+            issueKey: normalizeJiraIssueKey((params && params.jiraIssueKey) || (elements.jiraIssueKeyInput && elements.jiraIssueKeyInput.value) || ''),
+            cookie: loadJiraCookieFromStorage()
+        };
+    }
+
+    function saveJiraCookieToStorage(value) {
+        sessionStorage.setItem(JIRA_COOKIE_STORAGE_KEY, normalizeJiraCookieValue(value));
+    }
+
+    function loadJiraCookieFromStorage() {
+        return normalizeJiraCookieValue(sessionStorage.getItem(JIRA_COOKIE_STORAGE_KEY) || '');
+    }
+
+    function clearJiraCookieFromStorage() {
+        sessionStorage.removeItem(JIRA_COOKIE_STORAGE_KEY);
+    }
+
     function saveParamsToStorage(params) {
         const saved = localStorage.getItem(CONFIG.storageKey);
         let existing = {};
@@ -532,10 +755,11 @@
             主表字段数量: mainFields.length,
             子表数量: subTables.length,
             表单属性: {
-                BPM页签视图: formConfig.BPMTabView || '-',
-                是否多流程: formatPrimitive(Boolean(formConfig.isMultiBPM)),
-                是否禁止修改: formatPrimitive(Boolean(formConfig.forbidModify)),
-                是否启用审批意见: formatPrimitive(Boolean(formConfig.enableApprovalOpinions))
+                '允许复制提交': formatPrimitive(normalizeBooleanValue(formConfig.canCopy)),
+                '可另存为PDF': formatPrimitive(normalizeBooleanValue(formConfig.canSavePDF)),
+                '可分享': formatPrimitive(normalizeBooleanValue(formConfig.canShare)),
+                '可网页打印': formatPrimitive(normalizeBooleanValue(formConfig.canWebPrint)),
+                '是否是多流程': formatPrimitive(normalizeBooleanValue(formConfig.isMultiBPM))
             },
             主表字段: mainFields,
             子表配置: subTables.map((table) => ({
@@ -623,6 +847,11 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             发起时间: instanceInfo.startTime || '-',
             结束时间: instanceInfo.endTime || '-',
             发起人: getNestedFieldValue(instanceInfo, ['startParticipant', 'name']) || instanceInfo.startParticipantName || '-',
+            流程环节信息: historicActivities.map((item, index) => ({
+                序号: index + 1,
+                环节Id: item.activityId || '-',
+                环节名称: item.activityName || '-'
+            })),
             审批记录: historicTasks.map((task, index) => ({
                 序号: index + 1,
                 节点名称: task.name || '-',
@@ -632,15 +861,6 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 耗时毫秒: task.durationInMillis || '-',
                 任务定义Key: task.taskDefinitionKey || '-',
                 已完成: formatPrimitive(Boolean(task.finished))
-            })),
-            流程轨迹: historicActivities.map((item, index) => ({
-                序号: index + 1,
-                节点名称: item.activityName || '-',
-                节点类型: item.activityType || '-',
-                处理人: item.assignee || '-',
-                开始时间: item.startTime || '-',
-                结束时间: item.endTime || '-',
-                耗时毫秒: item.durationInMillis || '-'
             })),
             当前任务: historicTasks.filter((task) => !task.finished).map((task) => ({
                 节点名称: task.name || '-',
@@ -996,6 +1216,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             { label: '租户 ID', value: params.ytenant_id || '-' },
             { label: '表单Id', value: params.pkBo },
             { label: '单据Id', value: params.pkBoins },
+            { label: 'Jira工单号', value: params.jiraIssueKey || '-' },
             { label: '授权方式', value: isTokenAuth(params.authType) ? 'yht_access_token 授权' : 'sso授权' }
         ];
 
@@ -1020,6 +1241,10 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     function renderTabValue(tabKey, value) {
         if (tabKey === 'formConfig') {
             return renderFormConfigValue(value);
+        }
+
+        if (tabKey === 'jiraAnalysis') {
+            return renderJiraAnalysisValue(value);
         }
 
         return renderBusinessValue(value);
@@ -1104,6 +1329,102 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                     )}
                 </div>
             </article>
+        `;
+    }
+
+    function renderJiraAnalysisValue(value) {
+        if (!value || typeof value !== 'object') {
+            return renderBusinessValue(value);
+        }
+
+        if (value.state === 'pending') {
+            currentJiraAnalysisData = null;
+            return `
+                <div class="business-data-view">
+                    ${renderBusinessSection('加载说明', 'Jira 页签需要独立输入授权参数。', `<div class="empty-state">${escapeHtml(value.message || '请先填写 Jira 参数')}</div>`)}
+                </div>
+            `;
+        }
+
+        currentJiraAnalysisData = value;
+
+        return `
+            <div class="business-data-view">
+                ${renderBusinessSection('当前工单基础信息', '展示当前工单核心属性，并补充关键明细字段。', renderBusinessTable(Object.entries(value.currentIssueBase || {})))}
+                ${renderBusinessSection('工单详细内容', '从 Jira 详情接口 fields[].editHtml 中解析关键字段有效值。', renderBusinessTable(Object.entries(value.currentIssueDetail || {})))}
+                ${renderBusinessSection('相似场景工单列表', '预留后续调用其他 skill、智能体或大模型能力，分析当前工单后返回的相似场景工单集合。', renderBusinessTable(Object.entries(value.similarScenePlaceholder || {})))}
+                ${renderBusinessSection('智能分析预留', '预留后续接入智能体或 skill 的分析输出区域。', renderBusinessTable(Object.entries(value.analysisPlaceholder || {})))}
+                ${renderBusinessSection('近期工单列表', '使用 issueTable.table 展示当前查询条件下返回的近期工单集合，不代表和当前工单存在真实关联。', renderJiraRecentIssuesSection(value), { collapsible: true, sectionKey: 'jira-recent-issues' })}
+                ${value.raw ? renderBusinessSection('原始返回数据', '保留 Jira 列表与详情接口原始结构，便于排查解析问题。', renderTreeDetails(Object.entries(value.raw), 0), { collapsible: true, sectionKey: 'jira-raw', collapsed: true }) : ''}
+            </div>
+        `;
+    }
+
+    function renderJiraRecentIssuesSection(value) {
+        const recentIssues = Array.isArray(value && value.recentIssues) ? value.recentIssues : [];
+        if (!recentIssues.length) {
+            return '<div class="empty-state">暂无近期工单</div>';
+        }
+
+        const listHtml = renderJiraRecentIssuesTable(recentIssues);
+        const detailBlock = value && value.selectedRecentIssueDetail
+            ? renderCollapsibleBlock(
+                `近期工单详情：${value.selectedRecentIssueDetail.issueKey || '-'}`,
+                renderBusinessTable(Object.entries(value.selectedRecentIssueDetail.detail || {})),
+                {
+                    blockKey: `jira-recent-detail-${value.selectedRecentIssueDetail.issueKey || 'detail'}`,
+                    blockClassName: 'jira-inline-detail-block',
+                    anchorId: 'jira-recent-issue-detail-anchor'
+                }
+            )
+            : '<div class="empty-state">点击列表中的“查看详情”可在此处查看对应工单的详细内容</div>';
+
+        return `
+            <div class="jira-recent-issues-layout">
+                ${listHtml}
+                ${detailBlock}
+            </div>
+        `;
+    }
+
+    function renderJiraRecentIssuesTable(items) {
+        return `
+            <div class="business-table-wrap">
+                <table class="business-table business-table-detail jira-recent-issues-table">
+                    <thead>
+                        <tr>
+                            <th>序号</th>
+                            <th>Jira编号</th>
+                            <th>标题</th>
+                            <th>状态</th>
+                            <th>类型</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${items.map((item, index) => `
+                            <tr>
+                                <th scope="row">${index + 1}</th>
+                                <td>${escapeHtml(formatPrimitive(item.Jira编号))}</td>
+                                <td>${escapeHtml(formatPrimitive(item.标题))}</td>
+                                <td>${escapeHtml(formatPrimitive(item.状态))}</td>
+                                <td>${escapeHtml(formatPrimitive(item.类型))}</td>
+                                <td>
+                                    <button
+                                        type="button"
+                                        class="btn btn-secondary btn-inline btn-mini"
+                                        data-jira-action="view-detail"
+                                        data-issue-id="${escapeHtml(formatPrimitive(item.issueId))}"
+                                        data-issue-key="${escapeHtml(formatPrimitive(item.Jira编号))}"
+                                    >
+                                        查看详情
+                                    </button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
         `;
     }
 
@@ -1319,9 +1640,10 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         const collapsed = Boolean(config.collapsed);
         const blockClassName = config.blockClassName ? ` ${config.blockClassName}` : '';
         const blockKey = `collapse-${hashString(String(config.blockKey || title || 'block'))}`;
+        const anchorId = config.anchorId ? ` id="${escapeHtml(config.anchorId)}"` : '';
 
         return `
-            <div class="collapse-block${blockClassName}${collapsed ? ' is-collapsed' : ''}" data-collapse-block="${blockKey}">
+            <div class="collapse-block${blockClassName}${collapsed ? ' is-collapsed' : ''}" data-collapse-block="${blockKey}"${anchorId}>
                 <button
                     class="collapse-block-head"
                     type="button"
@@ -1479,6 +1801,12 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             return;
         }
 
+        const jiraActionButton = event.target.closest('[data-jira-action="view-detail"]');
+        if (jiraActionButton) {
+            handleJiraRecentIssueDetailAction(jiraActionButton);
+            return;
+        }
+
         handleTreeToggle(event);
     }
 
@@ -1578,6 +1906,426 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         `;
     }
 
+    function buildJiraPendingState(message, params, jiraParams) {
+        return {
+            state: 'pending',
+            message: message,
+            issueKey: (jiraParams && jiraParams.issueKey) || (params && params.jiraIssueKey) || '',
+            hasCookie: Boolean(jiraParams && jiraParams.cookie)
+        };
+    }
+
+    async function requestJiraIssueTable(jiraParams) {
+        const proxyUrl = buildLocalProxyUrl(CONFIG.tabs.jiraAnalysis.proxyBasePath + '/issue-table');
+        const payload = Object.assign({}, CONFIG.tabs.jiraAnalysis.listRequest || {}, {
+            jql: buildJiraJql(jiraParams.issueKey)
+        });
+
+        return requestCustomJson({
+            url: proxyUrl,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json; charset=UTF-8',
+                'x-jira-cookie': jiraParams.cookie
+            },
+            body: JSON.stringify(payload),
+            authErrorMessage: 'Jira 系统 Cookie 无效，请重新填写后重试'
+        });
+    }
+
+    async function requestJiraIssueDetail(currentIssue, jiraParams) {
+        const proxyUrl = new URL(buildLocalProxyUrl(CONFIG.tabs.jiraAnalysis.proxyBasePath + '/issue-detail'));
+        proxyUrl.searchParams.set('issueId', currentIssue.id);
+        proxyUrl.searchParams.set('issueKey', jiraParams.issueKey);
+        proxyUrl.searchParams.set('_', Date.now());
+
+        return requestCustomJson({
+            url: proxyUrl.toString(),
+            method: 'GET',
+            headers: {
+                Accept: 'application/json, text/plain, */*',
+                'x-jira-cookie': jiraParams.cookie
+            },
+            authErrorMessage: 'Jira 系统 Cookie 无效，请重新填写后重试'
+        });
+    }
+
+    async function handleJiraRecentIssueDetailAction(button) {
+        if (!button || button.disabled) {
+            return;
+        }
+
+        if (!currentJiraAnalysisData) {
+            showToast('当前 Jira 数据尚未加载完成', 'error');
+            return;
+        }
+
+        const issueId = String(button.getAttribute('data-issue-id') || '').trim();
+        const issueKey = normalizeJiraIssueKey(button.getAttribute('data-issue-key') || '');
+        const jiraCookie = loadJiraCookieFromStorage();
+
+        if (!issueId || !issueKey) {
+            showToast('当前列表项缺少 issueId 或 Jira 编号', 'error');
+            return;
+        }
+
+        if (!jiraCookie) {
+            showToast('请先填写 Jira系统Cookie', 'error');
+            return;
+        }
+
+        button.disabled = true;
+        const originalText = button.textContent;
+        button.textContent = '加载中...';
+
+        try {
+            const issueDetailRaw = await requestJiraIssueDetail({ id: issueId, key: issueKey }, { issueKey: issueKey, cookie: jiraCookie });
+            const issueDetail = normalizeJiraIssueDetailResponse(issueDetailRaw);
+            const detailFields = extractJiraDetailFields(issueDetail);
+            const solutionValue = findJiraFieldValue(detailFields, ['解决方案']) || '-';
+            const detailEntries = detailFields.reduce((result, item) => {
+                result[item.label] = item.value;
+                return result;
+            }, {});
+
+            if (!detailEntries['解决方案']) {
+                detailEntries['解决方案'] = solutionValue;
+            }
+
+            currentJiraAnalysisData.selectedRecentIssueDetail = {
+                issueId: issueId,
+                issueKey: issueKey,
+                detail: detailEntries
+            };
+
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+            scrollToJiraRecentIssueDetail();
+            showToast(`已加载 ${issueKey} 的工单详细内容`, 'success');
+        } catch (error) {
+            showToast(error.message || '加载近期工单详情失败', 'error');
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    }
+
+    function scrollToJiraRecentIssueDetail() {
+        const detailAnchor = document.getElementById('jira-recent-issue-detail-anchor');
+        if (!detailAnchor) {
+            return;
+        }
+
+        requestAnimationFrame(() => {
+            detailAnchor.scrollIntoView({
+                behavior: 'smooth',
+                block: 'start'
+            });
+        });
+    }
+
+    async function requestCustomJson(options) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), CONFIG.requestTimeout);
+
+        try {
+            const response = await fetch(options.url, {
+                method: options.method || 'GET',
+                headers: options.headers || {},
+                body: options.body,
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            const contentType = response.headers.get('content-type') || '';
+            const responseBody = contentType.includes('application/json') || contentType.includes('text/json')
+                ? await response.json().catch(() => null)
+                : await response.text();
+
+            if (!response.ok) {
+                const message = extractProxyErrorMessage(responseBody) ||
+                    (response.status === 401 || response.status === 403 ? options.authErrorMessage : '') ||
+                    `HTTP ${response.status}: ${response.statusText}`;
+                throw new Error(message);
+            }
+
+            return responseBody;
+        } catch (error) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('请求超时，请稍后重试');
+            }
+            throw error;
+        }
+    }
+
+    function extractProxyErrorMessage(responseBody) {
+        if (!responseBody || typeof responseBody !== 'object') {
+            return '';
+        }
+
+        return responseBody.error && responseBody.error.message
+            ? responseBody.error.message
+            : '';
+    }
+
+    function buildLocalProxyUrl(path) {
+        const proxyBase = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+            ? `${window.location.protocol}//${window.location.hostname}:18080`
+            : window.location.origin;
+        return new URL(path, proxyBase).toString();
+    }
+
+    function buildJiraJql(issueKey) {
+        const template = CONFIG.tabs.jiraAnalysis.jqlTemplate || 'issueKey = {issueKey} order by created DESC';
+        return template.replace(/\{issueKey\}/g, issueKey);
+    }
+
+    function normalizeJiraIssueTableResponse(response) {
+        if (!response || typeof response !== 'object') {
+            throw new Error('Jira 列表接口返回为空');
+        }
+
+        return response.issueTable || response.data || response;
+    }
+
+    function normalizeJiraIssueDetailResponse(response) {
+        if (!response || typeof response !== 'object') {
+            throw new Error('Jira 详情接口返回为空');
+        }
+
+        return response.data || response;
+    }
+
+    function findCurrentJiraIssue(issueTable, issueKey) {
+        const issueList = Array.isArray(issueTable && issueTable.table) ? issueTable.table : [];
+        return issueList.find((item) => normalizeJiraIssueKey(item && item.key) === normalizeJiraIssueKey(issueKey)) || null;
+    }
+
+    function buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail) {
+        const recentIssues = Array.isArray(issueTable && issueTable.table)
+            ? issueTable.table.map((item) => ({
+                Jira编号: item.key || '-',
+                issueId: item.id || '-',
+                标题: item.summary || '-',
+                状态: item.status || '-',
+                类型: getNestedFieldValue(item, ['type', 'name']) || '-'
+            }))
+            : [];
+
+        const detailFields = extractJiraDetailFields(issueDetail);
+        const promotedBaseInfo = pickJiraFieldEntries(detailFields, ['剩余处理时长', 'SOP单据号', '外部系统编号']);
+        const promotedFieldLabels = new Set(Object.keys(promotedBaseInfo));
+        const detailEntries = detailFields.reduce((result, item) => {
+            if (promotedFieldLabels.has(String(item.label))) {
+                return result;
+            }
+            result[item.label] = item.value;
+            return result;
+        }, {});
+
+        return {
+            state: 'loaded',
+            issueKey: currentIssue.key || jiraParams.issueKey,
+            issueId: currentIssue.id || '-',
+            issueTableTotal: issueTable.total || recentIssues.length || 0,
+            status: currentIssue.status || '-',
+            priority: findJiraFieldValue(detailFields, ['优先级', 'priority']) || '-',
+            currentIssueBase: {
+                Jira工单号: currentIssue.key || jiraParams.issueKey || '-',
+                issueId: currentIssue.id || '-',
+                标题: currentIssue.summary || '-',
+                类型: getNestedFieldValue(currentIssue, ['type', 'name']) || '-',
+                状态: currentIssue.status || '-',
+                优先级: findJiraFieldValue(detailFields, ['优先级', 'priority']) || '-',
+                ...promotedBaseInfo
+            },
+            currentIssueDetail: detailEntries,
+            recentIssues: recentIssues,
+            similarScenePlaceholder: {
+                当前状态: '待接入相似场景分析能力',
+                输入工单号: currentIssue.key || jiraParams.issueKey || '-',
+                说明: '后续由其他 skill、智能体或大模型分析后，返回真正的相似场景工单集合。'
+            },
+            analysisPlaceholder: {
+                当前状态: '待接入智能分析能力',
+                输入工单号: currentIssue.key || jiraParams.issueKey || '-',
+                说明: '后续可在此区域接入智能体、skill 或总结结论。'
+            },
+            raw: {
+                issueTable: issueTable,
+                issueDetail: issueDetail
+            }
+        };
+    }
+
+    function extractJiraDetailFields(issueDetail) {
+        const fields = Array.isArray(issueDetail && issueDetail.fields) ? issueDetail.fields : [];
+        const whitelist = Array.isArray(CONFIG.tabs.jiraAnalysis.detailFieldWhitelist)
+            ? CONFIG.tabs.jiraAnalysis.detailFieldWhitelist
+            : [];
+        const priorityLabels = new Set(['剩余处理时长', 'SOP单据号', '外部系统编号', '到期日', '解决方案']);
+        const filteredFields = whitelist.length
+            ? fields.filter((item) => whitelist.includes(item.id) || priorityLabels.has(String(item.label || '')))
+            : fields;
+
+        return filteredFields.map((field) => ({
+            id: field.id || '-',
+            label: field.label || field.id || '-',
+            value: formatJiraFieldValue(field.label || field.id || '-', parseJiraFieldHtmlValue(field.editHtml))
+        }));
+    }
+
+    function pickJiraFieldEntries(fields, labels) {
+        const labelSet = new Set((labels || []).map((item) => String(item)));
+        return (fields || []).reduce((result, item) => {
+            if (labelSet.has(String(item.label))) {
+                result[item.label] = item.value;
+            }
+            return result;
+        }, {});
+    }
+
+    function findJiraFieldValue(fields, labels) {
+        const labelSet = new Set((labels || []).map((item) => String(item)));
+        const matched = (fields || []).find((item) => labelSet.has(String(item.label)) || labelSet.has(String(item.id)));
+        return matched ? matched.value : '';
+    }
+
+    function parseJiraFieldHtmlValue(editHtml) {
+        if (!editHtml) {
+            return '-';
+        }
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(String(editHtml), 'text/html');
+
+        const dateInputValues = Array.from(doc.querySelectorAll('.aui-field-datepicker input:not([type="hidden"]), input.datepicker-input'))
+            .map((input) => normalizeWhitespace(input.value))
+            .filter(Boolean);
+        if (dateInputValues.length) {
+            return dateInputValues.join(' / ');
+        }
+
+        const checkedRadios = Array.from(doc.querySelectorAll('input[type="radio"]:checked'))
+            .map((input) => findLabelText(doc, input))
+            .filter(Boolean);
+        if (checkedRadios.length) {
+            return checkedRadios.join(' / ');
+        }
+
+        const checkedCheckboxes = Array.from(doc.querySelectorAll('input[type="checkbox"]:checked'))
+            .map((input) => findLabelText(doc, input))
+            .filter(Boolean);
+        if (checkedCheckboxes.length) {
+            return checkedCheckboxes.join(' / ');
+        }
+
+        const selectedOptions = Array.from(doc.querySelectorAll('select option:checked'))
+            .map((option) => normalizeWhitespace(option.textContent))
+            .filter((text) => text && text !== '无');
+        if (selectedOptions.length) {
+            return selectedOptions.join(' / ');
+        }
+
+        const textareas = Array.from(doc.querySelectorAll('textarea'))
+            .map((item) => normalizeWhitespace(item.value || item.textContent))
+            .filter(Boolean);
+        if (textareas.length) {
+            return textareas.join('\n');
+        }
+
+        const inputs = Array.from(doc.querySelectorAll('input'))
+            .filter((input) => {
+                const type = String(input.getAttribute('type') || 'text').toLowerCase();
+                return !['hidden', 'radio', 'checkbox', 'button', 'submit'].includes(type);
+            })
+            .map((input) => normalizeWhitespace(input.value))
+            .filter(Boolean);
+        if (inputs.length) {
+            return inputs.join(' / ');
+        }
+
+        const richText = Array.from(doc.querySelectorAll('.content-inner, .description, p'))
+            .map((item) => normalizeWhitespace(item.textContent))
+            .filter(Boolean);
+        if (richText.length) {
+            return richText.join(' / ');
+        }
+
+        return normalizeWhitespace(doc.body.textContent) || '-';
+    }
+
+    function formatJiraFieldValue(label, value) {
+        if (isEmptyValue(value) || value === '-') {
+            return '-';
+        }
+
+        if (isPreciseJiraSolutionLabel(label)) {
+            return formatJiraSolutionValue(value);
+        }
+
+        if (String(label).includes('到期日')) {
+            return formatJiraDateValue(value);
+        }
+
+        return value;
+    }
+
+    function isPreciseJiraSolutionLabel(label) {
+        return String(label || '').trim() === '解决方案';
+    }
+
+    function formatJiraSolutionValue(value) {
+        return String(value || '')
+            .replace(/\r\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    function formatJiraDateValue(value) {
+        const normalized = normalizeWhitespace(value);
+        if (!normalized) {
+            return '-';
+        }
+
+        const isoLikeValue = normalized
+            .replace(/\//g, '-')
+            .replace('T', ' ')
+            .replace(/([+-]\d{2}:\d{2}|Z)$/i, '')
+            .trim();
+
+        const match = isoLikeValue.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2})(?::\d{2})?)?/);
+        if (!match) {
+            return normalized;
+        }
+
+        const [, year, month, day, hour, minute] = match;
+        if (hour && minute) {
+            return `${year}-${month}-${day} ${hour}:${minute}`;
+        }
+
+        return `${year}-${month}-${day}`;
+    }
+
+    function findLabelText(doc, input) {
+        const inputId = input.getAttribute('id');
+        if (inputId) {
+            const label = doc.querySelector(`label[for="${cssEscapeValue(inputId)}"]`);
+            if (label) {
+                return normalizeWhitespace(label.textContent);
+            }
+        }
+
+        const parentLabel = input.closest('label');
+        if (parentLabel) {
+            return normalizeWhitespace(parentLabel.textContent);
+        }
+
+        const nextSiblingLabel = input.parentElement && input.parentElement.querySelector('label');
+        return nextSiblingLabel ? normalizeWhitespace(nextSiblingLabel.textContent) : '';
+    }
+
     function renderMissingParams() {
         renderSummary({
             environment: '-',
@@ -1585,6 +2333,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             ytenant_id: '-',
             pkBo: '-',
             pkBoins: '-',
+            jiraIssueKey: '-',
             ssoUrl: '-',
             secretKey: '-',
             linkPassword: '-',
@@ -1676,10 +2425,12 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 发起时间: '2026-04-22T10:12:00+08:00',
                 结束时间: '-',
                 发起人: '张三',
+                流程环节信息: [
+                    { 序号: 1, 环节Id: 'approve_1', 环节名称: '直属主管审批' }
+                ],
                 审批记录: [
                     { 序号: 1, 节点名称: '直属主管审批', 处理人: '李四', 开始时间: '2026-04-22T10:15:00+08:00', 完成时间: '-', 耗时毫秒: '-', 任务定义Key: 'approve_1', 已完成: '否' }
                 ],
-                流程轨迹: [],
                 当前任务: [
                     { 节点名称: '直属主管审批', 处理人: '李四', 到期时间: '-' }
                 ]
@@ -1696,14 +2447,38 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 ]
             },
             jiraAnalysis: {
-                分析目标: '业务问题排查',
-                单据Id: params.pkBoins,
-                表单Id: params.pkBo,
-                所属环境: environmentConfig.label || params.environment,
-                当前结论: '当前仍使用 mock 数据',
-                关联问题: [
-                    { Jira编号: 'IFORM-1286', 标题: '审批轨迹查询偶发超时', 状态: '处理中', 优先级: 'P2' }
-                ]
+                state: 'loaded',
+                issueKey: params.jiraIssueKey || 'UPESN-415300',
+                issueId: 8877099,
+                issueTableTotal: 1,
+                status: '支持确认完成',
+                priority: 'P2',
+                currentIssueBase: {
+                    标题: '【DSP支持问题】草稿箱里的申请可以批量一键提交吗？',
+                    类型: '支持问题',
+                    状态: '支持确认完成',
+                    issueId: 8877099,
+                    Jira编号: params.jiraIssueKey || 'UPESN-415300'
+                },
+                currentIssueDetail: {
+                    概要: '【DSP支持问题】草稿箱里的申请可以批量一键提交吗？',
+                    领域模块: '协同 / 审批-表单',
+                    问题来源: '外部系统',
+                    AI处理结果: '当前仍使用 mock 数据'
+                },
+                recentIssues: [
+                    { Jira编号: params.jiraIssueKey || 'UPESN-415300', issueId: 8877099, 标题: '审批轨迹查询偶发超时', 状态: '处理中', 类型: '支持问题' }
+                ],
+                similarScenePlaceholder: {
+                    当前状态: '待接入相似场景分析能力',
+                    输入工单号: params.jiraIssueKey || 'UPESN-415300',
+                    说明: '后续由其他 skill、智能体或大模型分析后，返回真正的相似场景工单集合。'
+                },
+                analysisPlaceholder: {
+                    当前状态: '当前仍使用 mock 数据',
+                    输入工单号: params.jiraIssueKey || 'UPESN-415300',
+                    说明: '后续可在此区域接入智能体、skill 或总结结论。'
+                }
             }
         };
 
@@ -1730,6 +2505,19 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         return value.slice(0, 3) + '*'.repeat(value.length - 6) + value.slice(-3);
     }
 
+    function normalizeJiraIssueKey(value) {
+        return String(value || '').trim().toUpperCase();
+    }
+
+    function normalizeJiraCookieValue(value) {
+        const normalized = String(value || '').trim();
+        return normalized.replace(/^cookie\s*:\s*/i, '').trim();
+    }
+
+    function normalizeWhitespace(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
     function isComplexValue(value) {
         return typeof value === 'object' && value !== null;
     }
@@ -1751,6 +2539,35 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             typeof value === 'object' &&
             !Array.isArray(value) &&
             Object.values(value).every((itemValue) => !isComplexValue(itemValue));
+    }
+
+    function normalizeBooleanValue(value) {
+        if (typeof value === 'boolean') {
+            return value;
+        }
+
+        if (typeof value === 'number') {
+            if (value === 1) {
+                return true;
+            }
+            if (value === 0) {
+                return false;
+            }
+            return value;
+        }
+
+        if (typeof value === 'string') {
+            const normalized = value.trim().toLowerCase();
+            if (normalized === 'true' || normalized === '1') {
+                return true;
+            }
+            if (normalized === 'false' || normalized === '0') {
+                return false;
+            }
+            return value;
+        }
+
+        return value;
     }
 
     function formatPrimitive(value) {

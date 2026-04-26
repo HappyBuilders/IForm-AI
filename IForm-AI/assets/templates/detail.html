@@ -94,6 +94,33 @@
                             <h3 class="panel-title">Jira问题分析</h3>
                             <span class="panel-note">关联问题、影响范围、处理建议与排查结论等</span>
                         </div>
+                        <section class="auth-block jira-control-block">
+                            <div class="auth-block-head">
+                                <div class="auth-block-title">Jira 查询参数</div>
+                                <div class="auth-block-note">Jira 工单号支持首页带入，Jira 系统 Cookie 仅在当前页签内维护</div>
+                            </div>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="jiraIssueKeyInput" class="form-label">
+                                        <span class="label-text">Jira工单号</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <input type="text" id="jiraIssueKeyInput" class="form-input" placeholder="请输入 Jira 工单号，例如 UPESN-415300">
+                                </div>
+                                <div class="form-group form-group-full">
+                                    <label for="jiraCookieInput" class="form-label">
+                                        <span class="label-text">Jira系统Cookie</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <textarea id="jiraCookieInput" class="form-input form-textarea" placeholder="请输入 Jira 系统 Cookie，用于请求头 Cookie 授权"></textarea>
+                                    <div class="field-note">系统不会将 Jira 系统 Cookie 拼接到 URL 中，只会在当前浏览器本地缓存并通过本地代理转发。</div>
+                                </div>
+                            </div>
+                            <div class="jira-control-actions">
+                                <button type="button" class="btn btn-primary btn-inline" id="jiraLoadBtn">加载 Jira 数据</button>
+                                <button type="button" class="btn btn-secondary btn-inline" id="jiraCookieClearBtn">清空 Cookie</button>
+                            </div>
+                        </section>
                         <div class="data-block" id="panel-jiraAnalysis"></div>
                     </section>
                 </div>

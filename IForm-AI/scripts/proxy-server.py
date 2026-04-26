@@ -9,6 +9,8 @@ import os
 import re
 import socketserver
 import ssl
+import time
+import urllib.parse
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,6 +34,7 @@ ENVIRONMENTS = {
 }
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+JIRA_BASE_URL = 'https://gfjira.yyrd.com'
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -54,7 +57,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def send_cors_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, yht_access_token, x-xsrf-token')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, yht_access_token, x-xsrf-token, x-jira-cookie')
         self.send_header('Access-Control-Max-Age', '86400')
 
     def do_GET(self):
@@ -62,11 +65,22 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_resolve_form_params()
             return
 
+        if self.path.startswith('/api/jira/issue-detail'):
+            self.handle_jira_issue_detail()
+            return
+
         if self.path.startswith('/api/proxy'):
             self.handle_proxy_request()
             return
 
         super().do_GET()
+
+    def do_POST(self):
+        if self.path.startswith('/api/jira/issue-table'):
+            self.handle_jira_issue_table()
+            return
+
+        self.send_error_response(404, '不支持的 POST 接口')
 
     def handle_proxy_request(self):
         try:
@@ -105,6 +119,109 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error_response(error.code, f'代理请求失败: {error.reason}')
         except Exception as error:
             self.send_error_response(500, f'代理请求异常: {error}')
+
+    def handle_jira_issue_table(self):
+        try:
+            jira_cookie = self.get_jira_cookie()
+            if not jira_cookie:
+                self.send_error_response(400, '缺少 Jira 系统 Cookie')
+                return
+
+            content_length = int(self.headers.get('Content-Length', '0') or '0')
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b''
+            body_text = self.decode_response_body(body_bytes, 'utf-8')
+            payload = json.loads(body_text or '{}')
+
+            jql = str(payload.get('jql', '')).strip()
+            if not jql:
+                self.send_error_response(400, '缺少 jql 参数')
+                return
+
+            post_data = {
+                'startIndex': str(payload.get('startIndex', '0')),
+                'jql': jql,
+                'layoutKey': str(payload.get('layoutKey', 'split-view'))
+            }
+            encoded_body = urllib.parse.urlencode(post_data).encode('utf-8')
+
+            referer = self.build_jira_issue_search_referer(jql)
+            headers = self.build_jira_headers(jira_cookie, {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'Origin': JIRA_BASE_URL,
+                'Referer': referer
+            })
+
+            request = urllib.request.Request(
+                f'{JIRA_BASE_URL}/rest/issueNav/1/issueTable',
+                data=encoded_body,
+                headers=headers,
+                method='POST'
+            )
+            context = self.create_ssl_context()
+
+            with urllib.request.urlopen(request, context=context, timeout=30) as response:
+                data = response.read()
+                body_text = self.decode_response_body(data, response.headers.get_content_charset())
+                if self.looks_like_jira_login_page(body_text):
+                    self.send_error_response(401, 'Jira 请求返回登录页，当前 Jira 系统 Cookie 可能已失效，请重新填写后重试')
+                    return
+                self.send_response(response.status)
+                self.send_cors_headers()
+                self.send_header('Content-Type', response.headers.get('Content-Type', 'application/json'))
+                self.end_headers()
+                self.wfile.write(data)
+        except urllib.error.HTTPError as error:
+            self.handle_jira_http_error(error)
+        except Exception as error:
+            self.send_error_response(500, f'Jira 列表请求异常: {error}')
+
+    def handle_jira_issue_detail(self):
+        try:
+            jira_cookie = self.get_jira_cookie()
+            if not jira_cookie:
+                self.send_error_response(400, '缺少 Jira 系统 Cookie')
+                return
+
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            issue_id = params.get('issueId', [''])[0]
+            issue_key = params.get('issueKey', [''])[0]
+
+            if not issue_id:
+                self.send_error_response(400, '缺少 issueId 参数')
+                return
+
+            timestamp = params.get('_', [''])[0] or str(int(time.time() * 1000))
+            query = urlencode({
+                'decorator': 'none',
+                'issueId': issue_id,
+                '_': timestamp
+            })
+            detail_url = f'{JIRA_BASE_URL}/secure/AjaxIssueEditAction!default.jspa?{query}'
+
+            referer = self.build_jira_issue_browse_referer(issue_key) if issue_key else self.build_jira_issue_search_referer('')
+            headers = self.build_jira_headers(jira_cookie, {
+                'Referer': referer
+            })
+
+            request = urllib.request.Request(detail_url, headers=headers, method='GET')
+            context = self.create_ssl_context()
+
+            with urllib.request.urlopen(request, context=context, timeout=30) as response:
+                data = response.read()
+                body_text = self.decode_response_body(data, response.headers.get_content_charset())
+                if self.looks_like_jira_login_page(body_text):
+                    self.send_error_response(401, 'Jira 请求返回登录页，当前 Jira 系统 Cookie 可能已失效，请重新填写后重试')
+                    return
+                self.send_response(response.status)
+                self.send_cors_headers()
+                self.send_header('Content-Type', response.headers.get('Content-Type', 'application/json'))
+                self.end_headers()
+                self.wfile.write(data)
+        except urllib.error.HTTPError as error:
+            self.handle_jira_http_error(error)
+        except Exception as error:
+            self.send_error_response(500, f'Jira 详情请求异常: {error}')
 
     def handle_resolve_form_params(self):
         try:
@@ -428,6 +545,66 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         if 'Accept' not in headers:
             headers['Accept'] = 'application/json, text/plain, */*'
         return headers
+
+    def get_jira_cookie(self):
+        jira_cookie = (self.headers.get('x-jira-cookie') or '').strip()
+        if jira_cookie.lower().startswith('cookie:'):
+            return jira_cookie.split(':', 1)[1].strip()
+        return jira_cookie
+
+    def build_jira_headers(self, jira_cookie, extra_headers=None):
+        headers = {
+            'Accept': '*/*',
+            'Cookie': jira_cookie,
+            'x-atlassian-token': 'no-check',
+            'x-requested-with': 'XMLHttpRequest',
+            '__amdmodulename': 'jira/issue/utils/xsrf-token-header'
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
+
+    def handle_jira_http_error(self, error):
+        error_body = ''
+        if error.fp:
+            try:
+                error_body = self.decode_response_body(
+                    error.fp.read(),
+                    error.headers.get_content_charset() if error.headers else None
+                )
+            except Exception:
+                error_body = ''
+
+        if error.code in (401, 403):
+            self.send_error_response(error.code, 'Jira 系统 Cookie 无效或无权限，请重新填写后重试')
+            return
+
+        message = f'Jira 请求失败: HTTP {error.code}'
+        if error.reason:
+            message = f'{message} {error.reason}'
+
+        if self.looks_like_jira_login_page(error_body):
+            message = 'Jira 请求返回登录页，当前 Jira 系统 Cookie 可能已失效，请重新填写后重试'
+
+        self.send_error_response(error.code, message)
+
+    def looks_like_jira_login_page(self, body_text):
+        normalized_body = (body_text or '').lower()
+        html_markers = ['<!doctype html', '<html', '<form', '<title']
+        login_markers = ['ajs-login', 'login-form', 'id="login-form"', '/login.jsp', '登录', '请登录']
+        return any(marker in normalized_body for marker in html_markers) and any(marker in normalized_body for marker in login_markers)
+
+    def build_jira_issue_search_referer(self, jql):
+        referer = f'{JIRA_BASE_URL}/issues/'
+        if jql:
+            referer = f'{referer}?jql={urllib.parse.quote(jql)}'
+        return referer
+
+    def build_jira_issue_browse_referer(self, issue_key):
+        issue_key = (issue_key or '').strip()
+        if not issue_key:
+            return self.build_jira_issue_search_referer('')
+        return f'{JIRA_BASE_URL}/browse/{urllib.parse.quote(issue_key)}'
 
     def create_ssl_context(self):
         context = ssl.create_default_context()
