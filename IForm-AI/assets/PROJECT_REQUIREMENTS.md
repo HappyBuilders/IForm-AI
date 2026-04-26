@@ -494,3 +494,43 @@ window.IFormDetailConfig = {
 1. In `表单配置信息`, the `主表字段` table must include a `columncode` column.
 2. In `表单配置信息`, each sub-table `子字段明细` table must include a `columncode` column.
 3. `columncode` should read from component config `columncode`, and should also accept `columnCode` as a compatibility alias.
+
+## 14. Current Effective Requirement Updates On 2026-04-26
+
+### 14.1 Form Config TableLayout Hierarchy
+
+1. In `表单配置信息`, `主表字段` and each sub-table `子字段明细` must preserve `TableLayout` rows instead of flattening all child controls into one level.
+2. `TableLayout` is used to express table ownership and hierarchy only, and must not be counted in control totals.
+3. Controls rendered under a `TableLayout` must display their所属表格 information so users can identify which table a control belongs to.
+4. Table rows append the `表格` marker after the table name; normal controls do not display a separate `控件` marker.
+5. Control count copy is standardized as `N个控件`.
+
+### 14.2 Form Config Collapse Behavior
+
+1. The `主表字段` section must support collapse and expand without changing the current table-style rendering.
+2. Each sub-table `子字段明细` section must support collapse and expand without changing the current table-style rendering.
+3. Each `TableLayout` row must support collapse and expand of its descendant rows so large hierarchies can be browsed progressively.
+4. The `主表字段` section toggle entry should be placed before the title on the left side.
+
+### 14.3 Environment Switch And URL Resolve Consistency
+
+1. When the homepage environment changes, the client must clear environment-bound inputs and derived values, including `yht_access_token`, `billUrl`, `pkBo`, and `pkBoins`.
+2. In URL resolve mode, the homepage must validate that the business URL matches the selected environment before sending `/api/resolve-form-params`.
+3. `/api/resolve-form-params` must support multi-hop redirect parsing and should attempt to extract `formId` and `formInstanceId` from query, fragment, or response text.
+4. If the redirect chain lands on a login or auth-failure page, the proxy should return a clear error indicating that the current environment's `yht_access_token` may be invalid or expired.
+
+### 14.4 Form Config Key Property Display
+
+1. In `表单配置信息`, the `表单属性` section must display these fields as the key property set: `canCopy`, `canSavePDF`, `canShare`, `canWebPrint`, and `isMultiBPM`.
+2. The labels must be rendered respectively as `允许复制提交`, `可另存为PDF`, `可分享`, `可网页打印`, and `是否是多流程`.
+3. `BPMTabView` must not be displayed in the `表单属性` section.
+4. Boolean-like values in this section must accept `boolean`, `"true"/"false"`, and `1/0` style payloads before rendering to `是/否`.
+5. Missing values in this section must render as `-`.
+
+### 14.5 Approval Activity Summary Display
+
+1. In `流程审批信息`, a tree-detail node named `流程环节信息` must be rendered from `loadDataJson.instanceInfo.historicActivityInstances`.
+2. Each activity item in `流程环节信息` must display only `activityId` and `activityName`, labeled as `环节Id` and `环节名称`.
+3. `流程环节信息` must be displayed before `审批记录` in the approval-tab tree details.
+4. The old `流程轨迹` presentation should not be rendered once `流程环节信息` is used as the activity summary.
+5. `historicActivityInstances` must preserve backend order and must not be deduplicated on the client, even when multiple entries share the same activity id or activity name.
