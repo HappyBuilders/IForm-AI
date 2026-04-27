@@ -201,14 +201,33 @@ python scripts/proxy-server.py
 
 ### 配置新环境
 
-编辑 `scripts/proxy-server.py` 中的 `ENVIRONMENTS` 字典：
+编辑运行时配置文件：
 
-```python
-ENVIRONMENTS = {
-    'test': 'https://bip-test.yonyoucloud.com',
-    'newenv': 'https://your-new-domain.com',  # 新增环境
+- `assets/static/config/runtime-config.json`
+- `assets/static/config/runtime-config.js`
+
+示例：
+
+```json
+{
+  "environments": {
+    "test": {
+      "label": "测试",
+      "baseUrl": "https://bip-test.yonyoucloud.com"
+    },
+    "newenv": {
+      "label": "新环境",
+      "baseUrl": "https://example.yonyoucloud.com"
+    }
+  },
+  "jira": {
+    "enabled": false,
+    "baseUrl": ""
+  }
 }
 ```
+
+如需启用 Jira 代理，请先在目标平台完成网络域名注册，再通过运行时配置注入 `jira.baseUrl`；默认配置不包含任何非白名单真实域名。
 
 ## 技术栈
 

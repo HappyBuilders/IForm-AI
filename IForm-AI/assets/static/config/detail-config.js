@@ -1,44 +1,7 @@
 window.IFormDetailConfig = {
     requestTimeout: 30000,
     storageKey: 'iform_ai_params',
-    environments: {
-        test: {
-            label: '测试',
-            baseUrl: 'https://bip-test.yonyoucloud.com'
-        },
-        daily: {
-            label: '日常',
-            baseUrl: 'https://bip-daily.yonyoucloud.com'
-        },
-        pre: {
-            label: '预发',
-            baseUrl: 'https://bip-pre.yonyoucloud.com'
-        },
-        core1: {
-            label: '核心1',
-            baseUrl: 'https://c1.yonyoucloud.com'
-        },
-        core2: {
-            label: '核心2',
-            baseUrl: 'https://c2.yonyoucloud.com'
-        },
-        core3: {
-            label: '核心3',
-            baseUrl: 'https://c3.yonyoucloud.com'
-        },
-        core4: {
-            label: '核心4',
-            baseUrl: 'https://c4.yonyoucloud.com'
-        },
-        shangkai: {
-            label: '商开',
-            baseUrl: ''
-        },
-        overseas: {
-            label: '海外',
-            baseUrl: ''
-        }
-    },
+    environments: window.IFormRuntimeConfig && window.IFormRuntimeConfig.environments ? window.IFormRuntimeConfig.environments : {},
     tabs: {
         formConfig: {
             title: '表单配置信息',

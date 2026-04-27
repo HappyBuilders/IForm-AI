@@ -6,6 +6,9 @@
 (function() {
     'use strict';
 
+    const runtimeConfig = window.IFormRuntimeConfig || {};
+    const environmentConfig = runtimeConfig.environments || {};
+
     const CONFIG = {
         STORAGE_KEY: 'iform_ai_params',
         DETAIL_PAGE: './detail.html',
@@ -461,21 +464,9 @@
     }
 
     function getEnvironmentOrigin(environment) {
-        const originMap = {
-            test: 'https://bip-test.yonyoucloud.com',
-            daily: 'https://bip-daily.yonyoucloud.com',
-            pre: 'https://bip-pre.yonyoucloud.com',
-            core1: 'https://c1.yonyoucloud.com',
-            core2: 'https://c2.yonyoucloud.com',
-            core3: 'https://c3.yonyoucloud.com',
-            core4: 'https://c4.yonyoucloud.com',
-            c1: 'https://c1.yonyoucloud.com',
-            c2: 'https://c2.yonyoucloud.com',
-            c3: 'https://c3.yonyoucloud.com',
-            c4: 'https://c4.yonyoucloud.com'
-        };
-
-        return originMap[environment] || '';
+        const normalizedEnvironment = normalizeEnvironment(environment);
+        const config = environmentConfig[normalizedEnvironment] || environmentConfig[environment] || {};
+        return config.baseUrl || '';
     }
 
     function setEnvironmentValue(value) {

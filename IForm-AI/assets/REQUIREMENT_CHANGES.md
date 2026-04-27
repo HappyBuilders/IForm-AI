@@ -198,7 +198,7 @@
    - 具体错误内容作为正文说明
    - 优化两段文字的间距、字号、颜色和换行表现，避免提示内容挤在一起
 3. 对外部 Jira 接口联调进行了验证：
-   - 请求地址：`https://gfjira.yyrd.com/secure/AjaxIssueEditActionu0021default.jspa`
+   - 请求地址：`https://jira-host.example.com/secure/AjaxIssueEditActionu0021default.jspa`
    - 实际返回为登录页 HTML，而不是业务 Ajax 数据
    - 说明当前提供的 `Cookie` / `yht_access_token` 组合未被目标站点识别为有效登录态
 
@@ -408,7 +408,7 @@
 6. 本地代理新增 Jira 转发接口：
    - `POST /api/jira/issue-table`
    - `GET /api/jira/issue-detail`
-7. 代理固定转发到 `https://gfjira.yyrd.com`，不随首页环境切换。
+7. 代理通过运行时配置转发到已注册的 Jira 域名，不随首页环境切换；默认配置下 Jira 代理关闭。
 8. Jira 页签查询 JQL 模板改为配置文件维护，并在请求前按当前 `Jira工单号` 替换 `{issueKey}`。
 9. 详情页加载策略调整为“核心页签优先，Jira 页签异步后置加载”，避免 Jira 接口拖慢表单、单据、审批等首屏展示。
 10. 原“当前工单概述”区域移除，避免与“当前工单基础信息”重复。

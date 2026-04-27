@@ -18,23 +18,54 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, unquote
 
 PORT = 18080
 DIRECTORY = Path(__file__).parent.parent / "assets"
-
-ENVIRONMENTS = {
-    'test': 'https://bip-test.yonyoucloud.com',
-    'daily': 'https://bip-daily.yonyoucloud.com',
-    'pre': 'https://bip-pre.yonyoucloud.com',
-    'core1': 'https://c1.yonyoucloud.com',
-    'core2': 'https://c2.yonyoucloud.com',
-    'core3': 'https://c3.yonyoucloud.com',
-    'core4': 'https://c4.yonyoucloud.com',
-    'c1': 'https://c1.yonyoucloud.com',
-    'c2': 'https://c2.yonyoucloud.com',
-    'c3': 'https://c3.yonyoucloud.com',
-    'c4': 'https://c4.yonyoucloud.com',
-}
+RUNTIME_CONFIG_PATH = DIRECTORY / "static" / "config" / "runtime-config.json"
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
-JIRA_BASE_URL = 'https://gfjira.yyrd.com'
+
+
+def load_runtime_config():
+    default_config = {
+        'environments': {},
+        'jira': {
+            'enabled': False,
+            'baseUrl': ''
+        }
+    }
+
+    if not RUNTIME_CONFIG_PATH.exists():
+        return default_config
+
+    try:
+        with RUNTIME_CONFIG_PATH.open('r', encoding='utf-8') as config_file:
+            loaded = json.load(config_file)
+    except Exception as error:
+        print(f'[IForm-AI] 运行时配置读取失败: {error}')
+        return default_config
+
+    if not isinstance(loaded, dict):
+        return default_config
+
+    config = default_config.copy()
+    config['environments'] = loaded.get('environments', {}) if isinstance(loaded.get('environments', {}), dict) else {}
+    jira_config = loaded.get('jira', {})
+    if isinstance(jira_config, dict):
+        config['jira'] = {
+            'enabled': bool(jira_config.get('enabled')),
+            'baseUrl': str(jira_config.get('baseUrl', '') or '').strip()
+        }
+    return config
+
+
+RUNTIME_CONFIG = load_runtime_config()
+
+
+def get_jira_base_url_from_config():
+    jira_config = RUNTIME_CONFIG.get('jira', {})
+    if not isinstance(jira_config, dict):
+        return ''
+    if not jira_config.get('enabled'):
+        return ''
+    return str(jira_config.get('baseUrl', '') or '').strip().rstrip('/')
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -94,7 +125,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_error_response(400, '缺少 env 或 path 参数')
                 return
 
-            base_url = ENVIRONMENTS.get(self.normalize_environment(env))
+            base_url = self.get_environment_base_url(env)
             if not base_url:
                 self.send_error_response(400, f'不支持的环境: {env}')
                 return
@@ -122,6 +153,11 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_jira_issue_table(self):
         try:
+            jira_base_url = self.get_jira_base_url()
+            if not jira_base_url:
+                self.send_error_response(400, 'Jira 代理未启用，请先在运行时配置中注册并启用 Jira 域名')
+                return
+
             jira_cookie = self.get_jira_cookie()
             if not jira_cookie:
                 self.send_error_response(400, '缺少 Jira 系统 Cookie')
@@ -147,12 +183,12 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             referer = self.build_jira_issue_search_referer(jql)
             headers = self.build_jira_headers(jira_cookie, {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'Origin': JIRA_BASE_URL,
+                'Origin': jira_base_url,
                 'Referer': referer
             })
 
             request = urllib.request.Request(
-                f'{JIRA_BASE_URL}/rest/issueNav/1/issueTable',
+                f'{jira_base_url}/rest/issueNav/1/issueTable',
                 data=encoded_body,
                 headers=headers,
                 method='POST'
@@ -177,6 +213,11 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_jira_issue_detail(self):
         try:
+            jira_base_url = self.get_jira_base_url()
+            if not jira_base_url:
+                self.send_error_response(400, 'Jira 代理未启用，请先在运行时配置中注册并启用 Jira 域名')
+                return
+
             jira_cookie = self.get_jira_cookie()
             if not jira_cookie:
                 self.send_error_response(400, '缺少 Jira 系统 Cookie')
@@ -197,7 +238,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 'issueId': issue_id,
                 '_': timestamp
             })
-            detail_url = f'{JIRA_BASE_URL}/secure/AjaxIssueEditAction!default.jspa?{query}'
+            detail_url = f'{jira_base_url}/secure/AjaxIssueEditAction!default.jspa?{query}'
 
             referer = self.build_jira_issue_browse_referer(issue_key) if issue_key else self.build_jira_issue_search_referer('')
             headers = self.build_jira_headers(jira_cookie, {
@@ -249,7 +290,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             normalized_env = self.normalize_environment(env)
-            base_url = ENVIRONMENTS.get(normalized_env)
+            base_url = self.get_environment_base_url(normalized_env)
             if not base_url:
                 self.send_error_response(400, f'不支持的环境: {env}')
                 return
@@ -595,7 +636,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return any(marker in normalized_body for marker in html_markers) and any(marker in normalized_body for marker in login_markers)
 
     def build_jira_issue_search_referer(self, jql):
-        referer = f'{JIRA_BASE_URL}/issues/'
+        jira_base_url = self.get_jira_base_url()
+        referer = f'{jira_base_url}/issues/'
         if jql:
             referer = f'{referer}?jql={urllib.parse.quote(jql)}'
         return referer
@@ -604,7 +646,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         issue_key = (issue_key or '').strip()
         if not issue_key:
             return self.build_jira_issue_search_referer('')
-        return f'{JIRA_BASE_URL}/browse/{urllib.parse.quote(issue_key)}'
+        jira_base_url = self.get_jira_base_url()
+        return f'{jira_base_url}/browse/{urllib.parse.quote(issue_key)}'
 
     def create_ssl_context(self):
         context = ssl.create_default_context()
@@ -620,6 +663,17 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'core4': 'c4'
         }
         return mapping.get(env, env)
+
+    def get_environment_base_url(self, env):
+        normalized_env = self.normalize_environment(env)
+        environments = RUNTIME_CONFIG.get('environments', {})
+        environment_config = environments.get(normalized_env) or environments.get(env) or {}
+        if not isinstance(environment_config, dict):
+            return ''
+        return str(environment_config.get('baseUrl', '') or '').strip()
+
+    def get_jira_base_url(self):
+        return get_jira_base_url_from_config()
 
     def get_first_query_value(self, query_params, *keys):
         lowered_params = {}
@@ -664,8 +718,10 @@ def main():
         print(f"{'=' * 60}")
         print(f"访问地址: {url}")
         print(f"静态目录: {DIRECTORY}")
+        print(f"运行时配置: {RUNTIME_CONFIG_PATH}")
         print(f"代理接口: http://localhost:{PORT}/api/proxy?env=test&path=/xxx")
         print(f"解析接口: http://localhost:{PORT}/api/resolve-form-params?env=test&url=https://...")
+        print(f"Jira代理: {'已启用' if get_jira_base_url_from_config() else '未启用'}")
         print(f"{'=' * 60}\n")
 
         try:
