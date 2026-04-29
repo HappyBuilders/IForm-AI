@@ -552,6 +552,8 @@ window.IFormDetailConfig = {
 3. `Jira系统Cookie` must not be written into the detail-page URL query.
 4. `Jira系统Cookie` must not be shown in the top summary area.
 5. `Jira系统Cookie` should be stored only in `sessionStorage` for the current browser session.
+6. The Jira tab must provide an optional `Jira问题关键检索词` input.
+7. When `Jira问题关键检索词` is filled, the Jira issue-table query must append the filter clause `AND text ~ "关键词"` to the existing JQL condition set.
 
 ### 14.8 Jira Analysis Loading Strategy
 
@@ -562,16 +564,16 @@ window.IFormDetailConfig = {
 ### 14.9 Jira Analysis UI Structure
 
 1. The `Jira问题分析` tab should render these sections in order:
-   - `当前工单基础信息`
    - `工单详细内容`
-   - `相似场景工单列表`
-   - `智能分析预留`
+   - `相似场景工单解析`
    - `近期工单列表`
+   - `列表工单详情`
    - `原始返回数据`
 2. The old `当前工单概述` block must not be rendered.
 3. The old `关联工单列表` label must be replaced with `近期工单列表`.
-4. `相似场景工单列表` is a reserved independent area for future skill / agent / LLM results and must not reuse the recent-issue list payload.
-5. `近期工单列表` must be displayed below `智能分析预留`.
+4. The old `当前工单基础信息` block is merged into `工单详细内容`, and both data sets must be shown in one merged detail table.
+5. `相似场景工单解析`, `近期工单列表`, and `列表工单详情` must support collapse / expand controls.
+6. Manual collapse state should be preserved during Jira similar-analysis polling refreshes.
 
 ### 14.10 Jira Field Parsing Rules
 
@@ -588,9 +590,14 @@ window.IFormDetailConfig = {
 ### 14.11 Jira Recent Issue Detail Interaction
 
 1. Each row in `近期工单列表` must provide a `查看详情` action.
-2. Clicking `查看详情` must load that row's Jira detail payload through the same detail proxy endpoint.
-3. The recent-issue detail area must include the parsed `解决方案` field.
-4. After rendering the recent-issue detail area, the page must auto-scroll to that area so users do not need to manually search for it in a long page.
+2. Each row in `相似场景工单解析` must also provide a `查看详情` action.
+3. Clicking `查看详情` must load that row's Jira detail payload through the same detail proxy endpoint.
+4. Both entry points must reuse one shared detail area rendered as a standalone block below `近期工单列表`, rather than nesting the detail area inside the recent-issue list block.
+5. The shared detail area title must reflect the entry source:
+   - `近期工单详情：{issueKey}`
+   - `相似场景工单详情：{issueKey}`
+6. The shared detail area must include the parsed `解决方案` field.
+7. After rendering the shared detail area, the page must auto-scroll to that area so users do not need to manually search for it in a long page.
 
 ### 14.12 Jira Similar Analysis Latest Rules
 
@@ -599,3 +606,20 @@ window.IFormDetailConfig = {
 3. `相似场景工单解析` must provide a manual `开始分析` action and must not auto-trigger during Jira tab loading.
 4. The similar-analysis result area should clearly distinguish between `智能体分析` and `本地兜底匹配`.
 5. When the smart analysis call fails, the fallback conclusion text must explicitly indicate that the page is showing a local fallback result rather than an LLM result.
+6. Similar analysis must process candidate issues in batches of `30`, rather than sending all candidates to the model in one request.
+7. The first click on `开始分析` should analyze only the first batch; subsequent batches should be triggered by a dedicated `分析更多` action.
+8. Similar-analysis matches must be accumulated across batches, deduplicated by `issueKey`, and rendered as one merged result list.
+9. The similar-analysis area must show batch progress metrics including:
+   - `候选工单总数`
+   - `已分析工单数`
+   - `分析批次`
+   - `命中工单数`
+10. When all batches are completed, the action area must show `没有更多分析工单了`.
+11. The similar-analysis task identifier must remain available across the initial batch, status polling, and `分析更多` continuation flow.
+
+### 14.13 Jira Recent Issue List Pagination Rules
+
+1. The backend Jira recent-issue request size should remain unchanged.
+2. The frontend `近期工单列表` should render only `10` rows per page.
+3. The recent-issue table should use frontend pagination controls to switch visible rows without re-requesting the Jira issue-table API.
+4. The pagination toolbar should support `首页`, `上一页`, page-number buttons, `下一页`, and `末页`.

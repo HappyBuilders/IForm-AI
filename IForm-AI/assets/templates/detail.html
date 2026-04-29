@@ -98,7 +98,7 @@
                         <section class="auth-block jira-control-block">
                             <div class="auth-block-head">
                                 <div class="auth-block-title">Jira 查询参数</div>
-                                <div class="auth-block-note">Jira 工单号支持首页带入，Jira 系统 Cookie 仅在当前页签内维护</div>
+                                
                             </div>
                             <div class="form-grid">
                                 <div class="form-group">
@@ -107,6 +107,13 @@
                                         <span class="required">*</span>
                                     </label>
                                     <input type="text" id="jiraIssueKeyInput" class="form-input" placeholder="请输入 Jira 工单号，例如 UPESN-415300">
+                                </div>
+                                <div class="form-group">
+                                    <label for="jiraKeywordInput" class="form-label">
+                                        <span class="label-text">Jira问题关键检索词</span>
+                                    </label>
+                                    <input type="text" id="jiraKeywordInput" class="form-input" placeholder="非必填，输入后会追加到 Jira 工单列表查询条件中">
+                                    <div class="field-note">非必填。填写后会在检索Jira历史工单列表中会根据该关键词筛选过滤。</div>
                                 </div>
                                 <div class="form-group form-group-full">
                                     <label for="jiraCookieInput" class="form-label">

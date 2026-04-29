@@ -25,7 +25,7 @@ window.IFormDetailConfig = {
             issueTablePath: '/rest/issueNav/1/issueTable',
             issueDetailPath: '/secure/AjaxIssueEditAction!default.jspa',
             issueBrowsePathTemplate: '/browse/{issueKey}',
-            jqlTemplate: '(project = UPESN AND issuetype = 支持问题 AND 领域模块 in cascadeOption(10707, 10710) AND status = 支持确认完成) OR issueKey = {issueKey} order by created DESC',
+            jqlTemplate: '(project = UPESN AND issuetype = 支持问题 AND (领域模块 in cascadeOption(10707, 11001) OR 领域模块 in cascadeOption(10707, 10710)) AND status = 支持确认完成) OR issueKey = {issueKey} order by created DESC',
             listRequest: {
                 startIndex: '0',
                 layoutKey: 'split-view'

@@ -62,6 +62,7 @@
         },
         aiAnalyzeBtn: document.getElementById('aiAnalyzeBtn'),
         jiraIssueKeyInput: document.getElementById('jiraIssueKeyInput'),
+        jiraKeywordInput: document.getElementById('jiraKeywordInput'),
         jiraCookieInput: document.getElementById('jiraCookieInput'),
         jiraLoadBtn: document.getElementById('jiraLoadBtn'),
         jiraCookieClearBtn: document.getElementById('jiraCookieClearBtn')
@@ -251,6 +252,10 @@
 
         if (elements.jiraIssueKeyInput) {
             elements.jiraIssueKeyInput.addEventListener('input', handleJiraIssueKeyInput);
+        }
+
+        if (elements.jiraKeywordInput) {
+            elements.jiraKeywordInput.addEventListener('input', handleJiraKeywordInput);
         }
 
         if (elements.jiraCookieInput) {
@@ -766,6 +771,10 @@
             elements.jiraIssueKeyInput.value = params && params.jiraIssueKey ? params.jiraIssueKey : '';
         }
 
+        if (elements.jiraKeywordInput) {
+            elements.jiraKeywordInput.value = params && params.jiraKeyword ? params.jiraKeyword : '';
+        }
+
         if (elements.jiraCookieInput) {
             elements.jiraCookieInput.value = loadJiraCookieFromStorage();
         }
@@ -786,6 +795,20 @@
         renderSummary(currentParams);
     }
 
+    function handleJiraKeywordInput() {
+        const nextValue = normalizeJiraKeyword(elements.jiraKeywordInput ? elements.jiraKeywordInput.value : '');
+        if (elements.jiraKeywordInput && elements.jiraKeywordInput.value !== nextValue) {
+            elements.jiraKeywordInput.value = nextValue;
+        }
+
+        if (!currentParams) {
+            return;
+        }
+
+        currentParams.jiraKeyword = nextValue;
+        saveParamsToStorage(currentParams);
+    }
+
     function handleJiraCookieInput() {
         const normalizedCookie = normalizeJiraCookieValue(elements.jiraCookieInput ? elements.jiraCookieInput.value : '');
         if (elements.jiraCookieInput && elements.jiraCookieInput.value !== normalizedCookie) {
@@ -802,10 +825,15 @@
         }
 
         const jiraIssueKey = normalizeJiraIssueKey(elements.jiraIssueKeyInput ? elements.jiraIssueKeyInput.value : '');
+        const jiraKeyword = normalizeJiraKeyword(elements.jiraKeywordInput ? elements.jiraKeywordInput.value : '');
         const jiraCookie = normalizeJiraCookieValue(elements.jiraCookieInput ? elements.jiraCookieInput.value : '');
 
         if (elements.jiraIssueKeyInput && elements.jiraIssueKeyInput.value !== jiraIssueKey) {
             elements.jiraIssueKeyInput.value = jiraIssueKey;
+        }
+
+        if (elements.jiraKeywordInput && elements.jiraKeywordInput.value !== jiraKeyword) {
+            elements.jiraKeywordInput.value = jiraKeyword;
         }
 
         if (elements.jiraCookieInput && elements.jiraCookieInput.value !== jiraCookie) {
@@ -813,6 +841,7 @@
         }
 
         params.jiraIssueKey = jiraIssueKey;
+        params.jiraKeyword = jiraKeyword;
         currentParams = params;
         saveParamsToStorage(currentParams);
         saveJiraCookieToStorage(jiraCookie);
@@ -863,6 +892,7 @@
     function getJiraRuntimeParams(params) {
         return {
             issueKey: normalizeJiraIssueKey((params && params.jiraIssueKey) || (elements.jiraIssueKeyInput && elements.jiraIssueKeyInput.value) || ''),
+            keyword: normalizeJiraKeyword((params && params.jiraKeyword) || (elements.jiraKeywordInput && elements.jiraKeywordInput.value) || ''),
             cookie: loadJiraCookieFromStorage()
         };
     }
@@ -2388,7 +2418,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     async function requestJiraIssueTable(jiraParams) {
         const proxyUrl = buildLocalProxyUrl(CONFIG.tabs.jiraAnalysis.proxyBasePath + '/issue-table');
         const payload = Object.assign({}, CONFIG.tabs.jiraAnalysis.listRequest || {}, {
-            jql: buildJiraJql(jiraParams.issueKey)
+            jql: buildJiraJql(jiraParams.issueKey, jiraParams.keyword)
         });
 
         return requestCustomJson({
@@ -2761,9 +2791,33 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         return new URL(path, proxyBase).toString();
     }
 
-    function buildJiraJql(issueKey) {
+    function buildJiraJql(issueKey, keyword) {
         const template = CONFIG.tabs.jiraAnalysis.jqlTemplate || 'issueKey = {issueKey} order by created DESC';
-        return template.replace(/\{issueKey\}/g, issueKey);
+        const resolvedJql = template.replace(/\{issueKey\}/g, issueKey);
+        const normalizedKeyword = normalizeJiraKeyword(keyword);
+        if (!normalizedKeyword) {
+            return resolvedJql;
+        }
+
+        const keywordClause = `text ~ "${escapeJiraJqlString(normalizedKeyword)}"`;
+        const orderByMatch = resolvedJql.match(/\sorder\s+by\s.+$/i);
+        const orderByClause = orderByMatch ? orderByMatch[0] : '';
+        const baseJql = orderByMatch ? resolvedJql.slice(0, orderByMatch.index) : resolvedJql;
+        const trimmedBaseJql = baseJql.trim();
+        const groupedAndClauseMatch = trimmedBaseJql.match(/^\(([\s\S]*)\)(\s+OR\s+issueKey\s*=\s*[\s\S]+)$/i);
+        if (groupedAndClauseMatch) {
+            return `(${groupedAndClauseMatch[1].trim()} AND ${keywordClause})${groupedAndClauseMatch[2]}${orderByClause}`;
+        }
+
+        return `${trimmedBaseJql} AND ${keywordClause}${orderByClause}`;
+    }
+
+    function normalizeJiraKeyword(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function escapeJiraJqlString(value) {
+        return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     }
 
     function normalizeJiraIssueTableResponse(response) {
@@ -2817,8 +2871,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     }
 
     function buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail, similarSceneAnalysis) {
+        const currentIssueKey = normalizeJiraIssueKey(currentIssue && currentIssue.key);
         const recentIssues = Array.isArray(issueTable && issueTable.table)
-            ? issueTable.table.map((item) => ({
+            ? issueTable.table.filter((item) => normalizeJiraIssueKey(item && item.key) !== currentIssueKey).map((item) => ({
                 Jira编号: item.key || '-',
                 issueId: item.id || '-',
                 标题: item.summary || '-',
