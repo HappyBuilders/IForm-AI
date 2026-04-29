@@ -22,6 +22,9 @@ RUNTIME_CONFIG_PATH = DIRECTORY / "static" / "config" / "runtime-config.json"
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
+# 异步任务存储
+LLM_TASKS = {}  # task_id -> {'status': 'pending|running|completed|failed', 'result': None, 'error': None}
+
 
 def load_runtime_config():
     default_config = {
@@ -29,6 +32,12 @@ def load_runtime_config():
         'jira': {
             'enabled': False,
             'baseUrl': ''
+        },
+        'yonclaw': {
+            'gatewayUrl': 'http://127.0.0.1:18789/api/agent',
+            'gatewayToken': '',
+            'model': 'yonyou-default/MiniMax-M2.5',
+            'cliPath': ''
         }
     }
 
@@ -53,6 +62,17 @@ def load_runtime_config():
             'enabled': bool(jira_config.get('enabled')),
             'baseUrl': str(jira_config.get('baseUrl', '') or '').strip()
         }
+    
+    # 读取 YonClaw 配置
+    yonclaw_config = loaded.get('yonclaw', {})
+    if isinstance(yonclaw_config, dict):
+        config['yonclaw'] = {
+            'gatewayUrl': str(yonclaw_config.get('gatewayUrl', '') or '').strip(),
+            'gatewayToken': str(yonclaw_config.get('gatewayToken', '') or '').strip(),
+            'model': str(yonclaw_config.get('model', 'yonyou-default/MiniMax-M2.5') or '').strip(),
+            'cliPath': str(yonclaw_config.get('cliPath', '') or '').strip()
+        }
+    
     return config
 
 
@@ -100,6 +120,21 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_jira_issue_detail()
             return
 
+        if self.path.startswith('/api/llm/analyze/status/'):
+            task_id = self.path.split('/api/llm/analyze/status/')[-1]
+            self.handle_llm_analyze_status(task_id)
+            return
+
+        if self.path.startswith('/api/llm/analyze/result/'):
+            task_id = self.path.split('/api/llm/analyze/result/')[-1]
+            self.handle_llm_analyze_result(task_id)
+            return
+
+        if self.path.startswith('/api/jira/similar-issues-analysis/status/'):
+            task_id = self.path.split('/api/jira/similar-issues-analysis/status/')[-1]
+            self.handle_jira_similar_analysis_status(task_id)
+            return
+
         if self.path.startswith('/api/proxy'):
             self.handle_proxy_request()
             return
@@ -109,6 +144,14 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith('/api/jira/issue-table'):
             self.handle_jira_issue_table()
+            return
+
+        if self.path.startswith('/api/jira/similar-issues-analysis'):
+            self.handle_jira_similar_issues_analysis()
+            return
+
+        if self.path.startswith('/api/llm/analyze'):
+            self.handle_llm_analyze()
             return
 
         self.send_error_response(404, '不支持的 POST 接口')
@@ -263,6 +306,427 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_jira_http_error(error)
         except Exception as error:
             self.send_error_response(500, f'Jira 详情请求异常: {error}')
+
+    def handle_jira_similar_issues_analysis(self):
+        """异步调用相似场景工单分析"""
+        try:
+            content_length = int(self.headers.get('Content-Length', '0') or '0')
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b''
+            body_text = self.decode_response_body(body_bytes, 'utf-8')
+            payload = json.loads(body_text or '{}')
+
+            issue_key = str(payload.get('issueKey', '') or '').strip()
+            current_summary = str(payload.get('currentSummary', '') or '').strip()
+            candidates = payload.get('candidates', [])
+
+            if not issue_key:
+                self.send_error_response(400, '缺少 issueKey 参数')
+                return
+
+            if not current_summary:
+                self.send_error_response(400, '缺少 currentSummary 参数')
+                return
+
+            if not isinstance(candidates, list):
+                self.send_error_response(400, 'candidates 参数格式不正确')
+                return
+
+            normalized_candidates = self.normalize_similar_issue_candidates(candidates, issue_key)
+            if not normalized_candidates:
+                self.send_json_response(200, {
+                    'success': True,
+                    'data': {
+                        'state': 'loaded',
+                        'issueKey': issue_key,
+                        'matches': [],
+                        'analysis': {
+                            'candidateCount': 0,
+                            'matchedCount': 0,
+                            'conclusion': '暂无可分析的候选工单'
+                        }
+                    }
+                })
+                return
+
+            # 生成任务ID
+            import uuid
+            task_id = str(uuid.uuid4())
+
+            # 构建分析任务数据
+            task_data = {
+                'issue_key': issue_key,
+                'current_summary': current_summary,
+                'candidates': normalized_candidates
+            }
+
+            # 立即返回任务ID
+            LLM_TASKS[task_id] = {
+                'status': 'pending',
+                'result': None,
+                'error': None,
+                'task_type': 'jira_similar',
+                'task_data': task_data
+            }
+
+            # 启动后台线程执行
+            import threading
+            thread = threading.Thread(
+                target=self._run_jira_similar_task,
+                args=(task_id, task_data),
+                daemon=True
+            )
+            thread.start()
+
+            self.send_json_response(200, {
+                'success': True,
+                'data': {
+                    'state': 'processing',
+                    'issueKey': issue_key,
+                    'taskId': task_id
+                }
+            })
+
+        except json.JSONDecodeError:
+            self.send_error_response(400, '请求体不是合法的 JSON')
+        except Exception as error:
+            self.send_error_response(500, f'相似场景工单分析失败: {error}')
+
+    def _run_jira_similar_task(self, task_id, task_data):
+        """后台执行相似工单分析任务"""
+        LLM_TASKS[task_id]['status'] = 'running'
+
+        try:
+            issue_key = task_data['issue_key']
+            current_summary = task_data['current_summary']
+            candidates = task_data['candidates']
+
+            analysis_result = self.invoke_similar_issue_analysis(issue_key, current_summary, candidates)
+            response_payload = self.build_similar_issue_analysis_response(
+                issue_key,
+                candidates,
+                analysis_result
+            )
+
+            LLM_TASKS[task_id]['status'] = 'completed'
+            LLM_TASKS[task_id]['result'] = {
+                'success': True,
+                'data': response_payload
+            }
+        except TimeoutError:
+            LLM_TASKS[task_id]['status'] = 'failed'
+            LLM_TASKS[task_id]['error'] = 'LLM 分析超时'
+        except Exception as error:
+            LLM_TASKS[task_id]['status'] = 'failed'
+            LLM_TASKS[task_id]['error'] = str(error)
+
+    def handle_jira_similar_analysis_status(self, task_id):
+        """查询相似工单分析任务状态"""
+        task = LLM_TASKS.get(task_id)
+
+        if not task:
+            self.send_error_response(404, '任务不存在或已过期')
+            return
+
+        if task['status'] == 'completed':
+            self.send_json_response(200, {
+                'success': True,
+                'data': {
+                    'state': 'loaded',
+                    'issueKey': task['task_data']['issue_key'],
+                    'taskId': task_id,
+                    'status': 'completed',
+                    'matches': task['result']['data'].get('matches', []),
+                    'analysis': task['result']['data'].get('analysis', {})
+                }
+            })
+        elif task['status'] == 'failed':
+            self.send_error_response(500, task.get('error', '分析失败'))
+        else:
+            self.send_json_response(200, {
+                'success': True,
+                'data': {
+                    'state': 'processing',
+                    'issueKey': task['task_data']['issue_key'],
+                    'taskId': task_id,
+                    'status': task['status']
+                }
+            })
+
+    def handle_llm_analyze(self):
+        """异步调用 YonClaw 大模型进行数据分析"""
+        try:
+            content_length = int(self.headers.get('Content-Length', '0') or '0')
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b''
+            body_text = self.decode_response_body(body_bytes, 'utf-8')
+            payload = json.loads(body_text or '{}')
+
+            prompt = str(payload.get('prompt', '') or '').strip()
+            data = payload.get('data', {})
+
+            if not prompt:
+                self.send_error_response(400, '缺少 prompt 参数')
+                return
+
+            full_prompt = f"{prompt}\n\n待分析数据：\n{json.dumps(data, ensure_ascii=False, indent=2)}"
+
+            # 生成任务ID
+            import uuid
+            task_id = str(uuid.uuid4())
+
+            # 立即返回任务ID
+            LLM_TASKS[task_id] = {
+                'status': 'pending',
+                'result': None,
+                'error': None,
+                'prompt': full_prompt
+            }
+
+            # 启动后台线程执行
+            import threading
+            thread = threading.Thread(
+                target=self._run_llm_task,
+                args=(task_id, full_prompt),
+                daemon=True
+            )
+            thread.start()
+
+            self.send_json_response(200, {
+                'code': 202,
+                'message': '任务已提交，正在处理中',
+                'data': {
+                    'taskId': task_id,
+                    'status': 'pending'
+                }
+            })
+
+        except json.JSONDecodeError:
+            self.send_error_response(400, '请求体不是合法的 JSON')
+        except Exception as error:
+            self.send_error_response(500, f'LLM 分析失败: {error}')
+
+    def _run_llm_task(self, task_id, prompt):
+        """后台执行 LLM 任务"""
+        LLM_TASKS[task_id]['status'] = 'running'
+
+        try:
+            result = self.invoke_openclaw_agent(prompt)
+            LLM_TASKS[task_id]['status'] = 'completed'
+            LLM_TASKS[task_id]['result'] = result
+        except TimeoutError:
+            LLM_TASKS[task_id]['status'] = 'failed'
+            LLM_TASKS[task_id]['error'] = 'LLM 分析超时'
+        except Exception as error:
+            LLM_TASKS[task_id]['status'] = 'failed'
+            LLM_TASKS[task_id]['error'] = str(error)
+
+    def handle_llm_analyze_status(self, task_id):
+        """查询 LLM 分析任务状态"""
+        task = LLM_TASKS.get(task_id)
+
+        if not task:
+            self.send_error_response(404, '任务不存在或已过期')
+            return
+
+        self.send_json_response(200, {
+            'code': 200,
+            'message': 'success',
+            'data': {
+                'taskId': task_id,
+                'status': task['status'],
+                'result': task.get('result'),
+                'error': task.get('error')
+            }
+        })
+
+    def handle_llm_analyze_result(self, task_id):
+        """获取 LLM 分析任务结果"""
+        task = LLM_TASKS.get(task_id)
+
+        if not task:
+            self.send_error_response(404, '任务不存在或已过期')
+            return
+
+        if task['status'] == 'pending' or task['status'] == 'running':
+            self.send_json_response(200, {
+                'code': 200,
+                'message': '任务处理中',
+                'data': {
+                    'taskId': task_id,
+                    'status': task['status']
+                }
+            })
+        elif task['status'] == 'completed':
+            self.send_json_response(200, {
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'taskId': task_id,
+                    'status': 'completed',
+                    'result': task['result']
+                }
+            })
+        else:  # failed
+            self.send_error_response(500, task.get('error', '任务执行失败'))
+
+    def invoke_openclaw_agent(self, prompt_text):
+        """调用 YonClaw 大模型"""
+        gateway_config = RUNTIME_CONFIG.get('yonclaw', {})
+        gateway_url = gateway_config.get('gatewayUrl', '').strip()
+        gateway_token = gateway_config.get('gatewayToken', '').strip()
+        model = gateway_config.get('model', 'openclaw/main').strip()
+
+        if not gateway_url or not gateway_token:
+            raise RuntimeError('Gateway URL 或 Token 未配置，请检查 yonclaw.gatewayUrl 和 yonclaw.gatewayToken')
+
+        return self.invoke_openclaw_agent_via_gateway(prompt_text, gateway_url, gateway_token, model)
+
+    def invoke_openclaw_agent_via_gateway(self, prompt_text, gateway_url, gateway_token, model):
+        """通过 Gateway OpenAI 兼容 API 调用大模型"""
+        payload = json.dumps({
+            'model': model,
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': prompt_text
+                }
+            ],
+            'max_tokens': 4000,
+            'temperature': 0.7
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
+            gateway_url,
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {gateway_token}'
+            },
+            method='POST'
+        )
+
+        context = self.create_ssl_context()
+
+        # 大模型调用超时设置为 5 分钟
+        llm_timeout = 300
+
+        try:
+            with urllib.request.urlopen(req, context=context, timeout=llm_timeout) as response:
+                response_data = response.read()
+                response_text = self.decode_response_body(response_data, response.headers.get_content_charset())
+
+            if not response_text:
+                raise RuntimeError('Gateway API 未返回内容')
+
+            # 尝试解析 JSON 响应（OpenAI 格式）
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # 如果不是 JSON，直接返回文本内容
+                return {'content': response_text}
+
+            # 从 OpenAI 格式响应中提取文本
+            content = self.extract_content_from_openai_response(result)
+            if content:
+                return {'content': content}
+
+            return {'content': response_text}
+
+        except urllib.error.HTTPError as error:
+            error_body = ''
+            if error.fp:
+                try:
+                    error_body = error.fp.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    pass
+            raise RuntimeError(f'Gateway API HTTP {error.code}: {error.reason} - {error_body}')
+        except urllib.error.URLError as error:
+            if 'timed out' in str(error.reason).lower() or isinstance(error.reason, TimeoutError):
+                raise TimeoutError('Gateway API 调用超时')
+            raise RuntimeError(f'Gateway API 网络错误: {error.reason}')
+        except TimeoutError:
+            raise
+        except Exception as error:
+            raise RuntimeError(f'Gateway API 调用失败: {error}')
+
+    def extract_content_from_openai_response(self, result):
+        """从 OpenAI 格式响应中提取文本内容"""
+        if isinstance(result, dict):
+            # OpenAI chat completions 格式
+            choices = result.get('choices', [])
+            if isinstance(choices, list) and len(choices) > 0:
+                choice = choices[0]
+                if isinstance(choice, dict):
+                    message = choice.get('message', {})
+                    if isinstance(message, dict):
+                        content = message.get('content')
+                        if content and isinstance(content, str):
+                            return content
+
+            # 尝试其他路径
+            for path in [
+                ['content'],
+                ['result', 'content'],
+                ['text'],
+                ['result', 'text'],
+            ]:
+                value = result
+                for key in path:
+                    if isinstance(value, dict):
+                        value = value.get(key)
+                    else:
+                        value = None
+                        break
+
+                if value and isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        return None
+
+    def extract_content_from_gateway_response(self, result):
+        """从 Gateway 响应中提取文本内容"""
+        if isinstance(result, dict):
+            # 尝试各种可能的路径
+            for path in [
+                ['content'],
+                ['result', 'content'],
+                ['result', 'text'],
+                ['message', 'content'],
+                ['choices', 0, 'message', 'content'],
+                ['output', 'content'],
+                ['text'],
+                ['result', 'payloads', 0, 'text'],
+            ]:
+                value = result
+                for key in path:
+                    if isinstance(value, dict):
+                        value = value.get(key)
+                    elif isinstance(value, list) and isinstance(key, int) and 0 <= key < len(value):
+                        value = value[key]
+                    else:
+                        value = None
+                        break
+
+                if value and isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        return None
+
+    def normalize_openclaw_agent_output(self, output_text):
+        try:
+            payload = json.loads(output_text)
+        except json.JSONDecodeError:
+            payload = self.parse_possible_json_text(output_text)
+
+        if isinstance(payload, dict):
+            result_payload = payload.get('result')
+            if isinstance(result_payload, dict):
+                response_payloads = result_payload.get('payloads')
+                if isinstance(response_payloads, list):
+                    texts = [item.get('text', '') for item in response_payloads if isinstance(item, dict) and item.get('text')]
+                    if texts:
+                        return {'content': ' '.join(texts)}
+
+        return payload if isinstance(payload, dict) else {'content': str(payload)}
 
     def handle_resolve_form_params(self):
         try:
@@ -586,6 +1050,233 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         if 'Accept' not in headers:
             headers['Accept'] = 'application/json, text/plain, */*'
         return headers
+
+    def normalize_similar_issue_candidates(self, candidates, issue_key):
+        normalized_issue_key = str(issue_key or '').strip().lower()
+        normalized_candidates = []
+
+        for item in candidates[:30]:
+            if not isinstance(item, dict):
+                continue
+
+            candidate_issue_key = str(item.get('issueKey', '') or '').strip()
+            candidate_summary = str(item.get('summary', '') or '').strip()
+            if not candidate_issue_key or not candidate_summary:
+                continue
+
+            if candidate_issue_key.lower() == normalized_issue_key:
+                continue
+
+            normalized_candidates.append({
+                'issueKey': candidate_issue_key,
+                'issueId': str(item.get('issueId', '') or '').strip(),
+                'summary': candidate_summary,
+                'status': str(item.get('status', '') or '-').strip() or '-',
+                'type': str(item.get('type', '') or '-').strip() or '-'
+            })
+
+        return normalized_candidates
+
+    def invoke_similar_issue_analysis(self, issue_key, current_summary, candidates):
+        business_data = {
+            'issueKey': issue_key,
+            'currentSummary': current_summary,
+            'candidates': candidates
+        }
+
+        try:
+            return self.invoke_similar_issue_analysis_via_llm(business_data)
+        except Exception as error:
+            print(f'[IForm-AI] Similar issue smart analysis failed, fallback to local keyword matcher: {error}')
+            return self.fallback_similar_issue_analysis(issue_key, current_summary, candidates)
+
+    def invoke_similar_issue_analysis_via_llm(self, business_data):
+        prompt_text = self.build_similar_issue_analysis_prompt(business_data)
+        response_payload = self.invoke_openclaw_agent(prompt_text)
+        return self.extract_similar_issue_analysis_result(response_payload)
+
+    def build_similar_issue_analysis_instruction(self):
+        return (
+            '你是 Jira 相似场景工单匹配助手。请分析并结构化整理输入的 Jira 工单数据，只根据标题语义判断哪些候选工单与当前工单属于相似场景。'
+            '不要返回当前工单自身。'
+            '只有相似时才放入 matches。'
+            'similarityScore 取值范围是 0 到 1。'
+            'matchReason 用中文简要说明相似原因。'
+            '如果候选工单不相似，就不要放入 matches。'
+            '禁止编造输入中不存在的 issueKey、issueId、summary、status、type。'
+            '只返回 JSON，不要输出 markdown，不要添加解释。'
+        )
+
+    def build_similar_issue_analysis_prompt(self, business_data):
+        return (
+            f"{self.build_similar_issue_analysis_instruction()}\n\n"
+            "请按以下 JSON 结构返回：\n"
+            "{\n"
+            '  "matches": [\n'
+            '    {\n'
+            '      "issueKey": "",\n'
+            '      "issueId": "",\n'
+            '      "similarityScore": 0,\n'
+            '      "matchReason": ""\n'
+            '    }\n'
+            '  ],\n'
+            '  "conclusion": ""\n'
+            "}\n\n"
+            "业务数据：\n"
+            f"{json.dumps(business_data, ensure_ascii=False, indent=2)}"
+        )
+
+    def extract_similar_issue_analysis_result(self, response_payload):
+        if not isinstance(response_payload, dict):
+            raise ValueError('LLM 返回结构不正确')
+
+        if isinstance(response_payload.get('data'), dict):
+            response_payload = response_payload.get('data')
+
+        if isinstance(response_payload.get('output'), dict):
+            response_payload = response_payload.get('output')
+
+        if isinstance(response_payload.get('result'), dict):
+            response_payload = response_payload.get('result')
+
+        if isinstance(response_payload.get('content'), dict):
+            response_payload = response_payload.get('content')
+
+        if isinstance(response_payload.get('content'), str):
+            response_payload = self.parse_possible_json_text(response_payload.get('content') or '')
+
+        if isinstance(response_payload.get('message'), dict):
+            response_payload = response_payload.get('message')
+
+        if isinstance(response_payload.get('message'), str):
+            response_payload = self.parse_possible_json_text(response_payload.get('message') or '')
+
+        if isinstance(response_payload.get('text'), str):
+            response_payload = self.parse_possible_json_text(response_payload.get('text') or '')
+
+        matches = response_payload.get('matches')
+        conclusion = response_payload.get('conclusion', '')
+        if not isinstance(matches, list):
+            raise ValueError('LLM 返回的 matches 字段格式不正确')
+
+        return {
+            'matches': matches,
+            'conclusion': str(conclusion or '').strip()
+        }
+
+    def parse_possible_json_text(self, text):
+        raw_text = str(text or '').strip()
+        if not raw_text:
+            return {}
+
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            pass
+
+        fenced_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', raw_text, flags=re.DOTALL)
+        if fenced_match:
+            return json.loads(fenced_match.group(1))
+
+        json_match = re.search(r'(\{.*\})', raw_text, flags=re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group(1))
+
+        raise ValueError('LLM 返回内容不是有效 JSON')
+
+    def fallback_similar_issue_analysis(self, issue_key, current_summary, candidates):
+        current_tokens = self.tokenize_similarity_text(current_summary)
+        matches = []
+
+        for candidate in candidates:
+            candidate_summary = candidate.get('summary', '')
+            candidate_tokens = self.tokenize_similarity_text(candidate_summary)
+            score = self.calculate_token_similarity(current_tokens, candidate_tokens)
+            if score < 0.35:
+                continue
+
+            matches.append({
+                'issueKey': candidate.get('issueKey', ''),
+                'issueId': candidate.get('issueId', ''),
+                'similarityScore': round(score, 4),
+                'matchReason': '已按标题关键词重合度返回本地匹配结果，供人工进一步确认'
+            })
+
+        matches.sort(key=lambda item: item.get('similarityScore', 0), reverse=True)
+        return {
+            'source': 'fallback',
+            'strategy': 'keyword_overlap',
+            'matches': matches[:10],
+            'conclusion': '当前结果来自本地关键词匹配，不代表智能体语义解析结论，请结合工单详情人工确认'
+        }
+
+    def tokenize_similarity_text(self, text):
+        normalized_text = re.sub(r'[\W_]+', ' ', str(text or '').lower())
+        tokens = [token for token in normalized_text.split() if len(token) >= 2]
+        return set(tokens)
+
+    def calculate_token_similarity(self, left_tokens, right_tokens):
+        if not left_tokens or not right_tokens:
+            return 0
+
+        intersection = left_tokens & right_tokens
+        union = left_tokens | right_tokens
+        if not union:
+            return 0
+
+        return len(intersection) / len(union)
+
+    def build_similar_issue_analysis_response(self, issue_key, candidates, analysis_result):
+        matches = analysis_result.get('matches', []) if isinstance(analysis_result, dict) else []
+        candidate_map = {item.get('issueKey', ''): item for item in candidates}
+        normalized_matches = []
+
+        for item in matches:
+            if not isinstance(item, dict):
+                continue
+
+            candidate_issue_key = str(item.get('issueKey', '') or '').strip()
+            if not candidate_issue_key or candidate_issue_key not in candidate_map:
+                continue
+
+            candidate = candidate_map[candidate_issue_key]
+            similarity_score = item.get('similarityScore', 0)
+            try:
+                similarity_score = max(0, min(1, float(similarity_score)))
+            except (TypeError, ValueError):
+                similarity_score = 0
+
+            normalized_matches.append({
+                'issueKey': candidate_issue_key,
+                'issueId': candidate.get('issueId', ''),
+                'summary': candidate.get('summary', ''),
+                'status': candidate.get('status', '-'),
+                'type': candidate.get('type', '-'),
+                'similarityScore': round(similarity_score, 4),
+                'matchReason': str(item.get('matchReason', '') or '').strip() or '模型未返回匹配原因'
+            })
+
+        normalized_matches.sort(key=lambda item: item.get('similarityScore', 0), reverse=True)
+        analysis_source = (
+            str(analysis_result.get('source', '') or '').strip()
+            if isinstance(analysis_result, dict)
+            else ''
+        ) or 'llm'
+        return {
+            'state': 'loaded',
+            'issueKey': issue_key,
+            'matches': normalized_matches,
+            'analysis': {
+                'source': analysis_source,
+                'candidateCount': len(candidates),
+                'matchedCount': len(normalized_matches),
+                'conclusion': (
+                    str(analysis_result.get('conclusion', '') or '').strip()
+                    if isinstance(analysis_result, dict)
+                    else ''
+                ) or (f'找到 {len(normalized_matches)} 条相似场景工单' if normalized_matches else '未匹配到相似场景工单')
+            }
+        }
 
     def get_jira_cookie(self):
         jira_cookie = (self.headers.get('x-jira-cookie') or '').strip()

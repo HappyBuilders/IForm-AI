@@ -591,3 +591,11 @@ window.IFormDetailConfig = {
 2. Clicking `查看详情` must load that row's Jira detail payload through the same detail proxy endpoint.
 3. The recent-issue detail area must include the parsed `解决方案` field.
 4. After rendering the recent-issue detail area, the page must auto-scroll to that area so users do not need to manually search for it in a long page.
+
+### 14.12 Jira Similar Analysis Latest Rules
+
+1. The previous wording `相似场景工单列表` is superseded by `相似场景工单解析`.
+2. The previous `智能分析预留` block is removed and is no longer part of the Jira tab UI structure.
+3. `相似场景工单解析` must provide a manual `开始分析` action and must not auto-trigger during Jira tab loading.
+4. The similar-analysis result area should clearly distinguish between `智能体分析` and `本地兜底匹配`.
+5. When the smart analysis call fails, the fallback conclusion text must explicitly indicate that the page is showing a local fallback result rather than an LLM result.

@@ -54,6 +54,7 @@
                     <button type="button" class="tab-button" data-tab="approval" role="tab" aria-selected="false">流程审批信息</button>
                     <button type="button" class="tab-button" data-tab="businessLog" role="tab" aria-selected="false">业务日志</button>
                     <button type="button" class="tab-button" data-tab="jiraAnalysis" role="tab" aria-selected="false">Jira问题分析</button>
+                    <button type="button" class="tab-button" data-tab="aiAnalysis" role="tab" aria-selected="false">AI智能分析</button>
                 </div>
 
                 <div class="tab-panels detail-tab-panels">
@@ -122,6 +123,17 @@
                             </div>
                         </section>
                         <div class="data-block" id="panel-jiraAnalysis"></div>
+                    </section>
+
+                    <section class="tab-panel" data-panel="aiAnalysis" role="tabpanel" hidden>
+                        <div class="panel-head">
+                            <h3 class="panel-title">AI智能分析</h3>
+                            <span class="panel-note">基于大模型分析业务数据并生成洞察报告</span>
+                            <button type="button" class="btn btn-primary btn-inline" id="aiAnalyzeBtn">开始分析</button>
+                        </div>
+                        <div class="ai-analysis-result" id="panel-aiAnalysis">
+                            <div class="ai-analysis-placeholder">点击"开始分析"按钮，使用AI分析当前业务数据</div>
+                        </div>
                     </section>
                 </div>
             </section>

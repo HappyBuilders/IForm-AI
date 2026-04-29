@@ -1446,3 +1446,76 @@ body {
     background: rgba(47, 139, 199, 0.22);
     color: var(--text-main);
 }
+
+/* ==================== AI 智能分析样式 ==================== */
+.ai-analysis-result {
+    padding: 16px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    min-height: 200px;
+}
+
+.ai-analysis-placeholder {
+    color: #666;
+    font-style: italic;
+    text-align: center;
+    padding: 60px 20px;
+}
+
+.ai-analysis-loading {
+    color: #2f8bc7;
+    text-align: center;
+    padding: 60px 20px;
+    font-size: 14px;
+}
+
+.ai-analysis-error {
+    color: #dc3545;
+    background: #fff3f3;
+    padding: 16px;
+    border-radius: 8px;
+    border: 1px solid #ffcdd2;
+}
+
+.ai-analysis-content {
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    line-height: 1.8;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.ai-analysis-content strong {
+    color: #155b94;
+    font-weight: 600;
+}
+
+.ai-analysis-content em {
+    color: #666;
+    font-style: italic;
+}
+
+/* AI分析按钮 */
+#aiAnalyzeBtn {
+    margin-left: auto;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+#aiAnalyzeBtn:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+#aiAnalyzeBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

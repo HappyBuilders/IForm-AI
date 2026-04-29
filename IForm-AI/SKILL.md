@@ -67,7 +67,7 @@ IForm-AI/
 python scripts/proxy-server.py
 ```
 
-然后访问：`http://localhost:8080/templates/index.html`
+然后访问：`http://localhost:18080/templates/index.html`
 
 **代理功能说明**：
 - 所有API请求自动通过代理转发
@@ -154,8 +154,8 @@ npx http-server assets -p 8080
 
 ### 代理服务器原理
 ```
-浏览器 → localhost:8080/api/proxy → 代理服务器 → BIP服务器
-              ↑                              ↓
+浏览器 → localhost:18080/api/proxy → 代理服务器 → BIP服务器
+              ↑                               ↓
          无跨域问题                    服务器间无CORS限制
 ```
 
@@ -164,13 +164,13 @@ npx http-server assets -p 8080
 ### 1. 启动代理服务器
 
 ```bash
-cd E:\CLAUDE_IFORM_AI\IForm-AI
+# 在当前项目根目录执行
 python scripts/proxy-server.py
 ```
 
 ### 2. 访问首页
 
-浏览器打开：`http://localhost:8080/templates/index.html`
+浏览器打开：`http://localhost:18080/templates/index.html`
 
 ### 3. 输入参数
 

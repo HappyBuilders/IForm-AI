@@ -7,7 +7,7 @@
     'use strict';
 
     const DEFAULT_CONFIG = {
-        requestTimeout: 30000,
+        requestTimeout: 180000,
         storageKey: 'iform_ai_params',
         environments: {},
         tabs: {
@@ -32,13 +32,15 @@
     };
 
     const CONFIG = mergeConfig(window.IFormDetailConfig || {});
-    const TAB_KEYS = ['formConfig', 'document', 'approval', 'businessLog', 'jiraAnalysis'];
+    const TAB_KEYS = ['formConfig', 'document', 'approval', 'businessLog', 'aiAnalysis', 'jiraAnalysis'];
     const PRIMARY_TAB_KEYS = ['formConfig', 'document', 'approval', 'businessLog'];
     const JIRA_TAB_KEY = 'jiraAnalysis';
+    const AI_ANALYSIS_TAB_KEY = 'aiAnalysis';
     const JIRA_COOKIE_STORAGE_KEY = CONFIG.storageKey + '_jira_cookie';
     let currentParams = null;
     let currentJiraAnalysisData = null;
     let currentLoadSequence = 0;
+    let currentBusinessData = {}; // 存储各页签的业务数据用于AI分析
 
     const elements = {
         summaryGrid: document.getElementById('summaryGrid'),
@@ -53,14 +55,165 @@
             document: document.getElementById('panel-document'),
             approval: document.getElementById('panel-approval'),
             businessLog: document.getElementById('panel-businessLog'),
+            aiAnalysis: document.getElementById('panel-aiAnalysis'),
             jiraAnalysis: document.getElementById('panel-jiraAnalysis')
         },
+        aiAnalyzeBtn: document.getElementById('aiAnalyzeBtn'),
         jiraIssueKeyInput: document.getElementById('jiraIssueKeyInput'),
         jiraCookieInput: document.getElementById('jiraCookieInput'),
         jiraLoadBtn: document.getElementById('jiraLoadBtn'),
         jiraCookieClearBtn: document.getElementById('jiraCookieClearBtn')
     };
 
+    // ==================== AI 智能分析功能 ====================
+    function handleAIAnalyzeClick() {
+        if (!currentParams) {
+            showToast('请先加载业务数据', 'error');
+            return;
+        }
+
+        // 收集各页签数据
+        const analysisData = {
+            params: currentParams,
+            formConfig: extractPanelData('panel-formConfig'),
+            document: extractPanelData('panel-document'),
+            approval: extractPanelData('panel-approval'),
+            businessLog: extractPanelData('panel-businessLog')
+        };
+
+        // 显示加载状态
+        if (elements.aiAnalyzeBtn) {
+            elements.aiAnalyzeBtn.disabled = true;
+            elements.aiAnalyzeBtn.textContent = '分析中...';
+        }
+        if (elements.panels.aiAnalysis) {
+            elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在调用AI分析，请稍候...</div>';
+        }
+
+        // 调用后端 API
+        analyzeWithLLM({
+            prompt: '你是一个专业的业务数据分析助手。请分析以下业务系统数据，给出：\n1. 数据概要总结\n2. 关键信息提取\n3. 可能的问题或风险提示\n4. 改进建议\n请用简洁易懂的中文回答。',
+            data: analysisData
+        }).then(result => {
+            if (result.code === 200 && result.data) {
+                let content = result.data.content || result.data.message || JSON.stringify(result.data, null, 2);
+                if (elements.panels.aiAnalysis) {
+                    elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-content">' + formatAIResponse(content) + '</div>';
+                }
+                showToast('AI分析完成', 'success');
+            } else {
+                throw new Error(result.message || '分析失败');
+            }
+        }).catch(error => {
+            console.error('AI分析失败:', error);
+            if (elements.panels.aiAnalysis) {
+                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-error">AI分析失败: ' + escapeHtml(error.message) + '</div>';
+            }
+            showToast('AI分析失败: ' + error.message, 'error');
+        }).finally(() => {
+            if (elements.aiAnalyzeBtn) {
+                elements.aiAnalyzeBtn.disabled = false;
+                elements.aiAnalyzeBtn.textContent = '开始分析';
+            }
+        });
+    }
+
+    async function analyzeWithLLM(payload) {
+        // 提交任务
+        const submitResponse = await fetch('/api/llm/analyze', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        const submitResult = await submitResponse.json();
+
+        if (submitResult.code !== 202) {
+            throw new Error(submitResult.message || '任务提交失败');
+        }
+
+        const taskId = submitResult.data.taskId;
+
+        // 轮询查询状态
+        const maxAttempts = 120; // 最多轮询120次
+        const pollInterval = 5000; // 每5秒查询一次
+        let attempts = 0;
+
+        while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+            const statusResponse = await fetch(`/api/llm/analyze/status/${taskId}`);
+            const statusResult = await statusResponse.json();
+
+            if (statusResult.data.status === 'completed') {
+                return {
+                    code: 200,
+                    message: 'success',
+                    data: statusResult.data.result
+                };
+            } else if (statusResult.data.status === 'failed') {
+                throw new Error(statusResult.data.error || '分析失败');
+            }
+
+            attempts++;
+
+            // 更新UI显示进度
+            if (elements.panels.aiAnalysis) {
+                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在分析中... (' + Math.round(attempts * 5) + '秒)</div>';
+            }
+        }
+
+        throw new Error('分析超时，请稍后重试');
+    }
+
+    function extractPanelData(panelId) {
+        const panel = document.getElementById(panelId);
+        if (!panel) return null;
+
+        const data = {};
+        const items = panel.querySelectorAll('.data-item');
+        items.forEach(item => {
+            const label = item.querySelector('.data-label');
+            const value = item.querySelector('.data-value');
+            if (label && value) {
+                data[label.textContent.trim()] = value.textContent.trim();
+            }
+        });
+
+        // 如果没有 data-item，尝试获取 pre 或 code 标签的内容
+        if (Object.keys(data).length === 0) {
+            const pre = panel.querySelector('pre');
+            if (pre) {
+                try {
+                    return JSON.parse(pre.textContent);
+                } catch {
+                    return pre.textContent;
+                }
+            }
+        }
+
+        return Object.keys(data).length > 0 ? data : null;
+    }
+
+    function formatAIResponse(content) {
+        // 简单格式化AI返回的内容
+        if (typeof content === 'string') {
+            return content
+                .replace(/\n/g, '<br>')
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>');
+        }
+        return JSON.stringify(content, null, 2).replace(/\n/g, '<br>');
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // ==================== 原有函数 ====================
     function init() {
         bindEvents();
 
@@ -108,6 +261,10 @@
 
         if (elements.jiraCookieClearBtn) {
             elements.jiraCookieClearBtn.addEventListener('click', handleJiraCookieClearClick);
+        }
+
+        if (elements.aiAnalyzeBtn) {
+            elements.aiAnalyzeBtn.addEventListener('click', handleAIAnalyzeClick);
         }
     }
 
@@ -1352,10 +1509,116 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             <div class="business-data-view">
                 ${renderBusinessSection('当前工单基础信息', '展示当前工单核心属性，并补充关键明细字段。', renderBusinessTable(Object.entries(value.currentIssueBase || {})))}
                 ${renderBusinessSection('工单详细内容', '从 Jira 详情接口 fields[].editHtml 中解析关键字段有效值。', renderBusinessTable(Object.entries(value.currentIssueDetail || {})))}
-                ${renderBusinessSection('相似场景工单列表', '预留后续调用其他 skill、智能体或大模型能力，分析当前工单后返回的相似场景工单集合。', renderBusinessTable(Object.entries(value.similarScenePlaceholder || {})))}
-                ${renderBusinessSection('智能分析预留', '预留后续接入智能体或 skill 的分析输出区域。', renderBusinessTable(Object.entries(value.analysisPlaceholder || {})))}
+                ${renderBusinessSection('相似场景工单解析', '基于当前工单 summary 与 Jira 查询结果中的候选工单 summary 做语义匹配后返回命中列表。', renderJiraSimilarIssuesSection(value), {
+                    headActionHtml: renderJiraSimilarAnalysisAction(value)
+                })}
                 ${renderBusinessSection('近期工单列表', '使用 issueTable.table 展示当前查询条件下返回的近期工单集合，不代表和当前工单存在真实关联。', renderJiraRecentIssuesSection(value), { collapsible: true, sectionKey: 'jira-recent-issues' })}
                 ${value.raw ? renderBusinessSection('原始返回数据', '保留 Jira 列表与详情接口原始结构，便于排查解析问题。', renderTreeDetails(Object.entries(value.raw), 0), { collapsible: true, sectionKey: 'jira-raw', collapsed: true }) : ''}
+            </div>
+        `;
+    }
+
+    function renderJiraSimilarAnalysisAction(value) {
+        const similarSceneAnalysis = value && value.similarSceneAnalysis ? value.similarSceneAnalysis : {};
+        const isLoading = similarSceneAnalysis.state === 'loading';
+        return `
+            <button
+                type="button"
+                class="btn btn-primary btn-inline btn-mini"
+                data-jira-action="analyze-similar"
+                ${isLoading ? 'disabled' : ''}
+            >
+                ${isLoading ? '分析中...' : '开始分析'}
+            </button>
+        `;
+    }
+
+    function renderJiraSimilarIssuesSection(value) {
+        const similarSceneAnalysis = value && value.similarSceneAnalysis ? value.similarSceneAnalysis : {};
+        const matches = Array.isArray(similarSceneAnalysis.matches) ? similarSceneAnalysis.matches : [];
+        const analysis = similarSceneAnalysis.analysis || {};
+        const state = similarSceneAnalysis.state || 'pending';
+
+        if (state === 'loading') {
+            return `<div class="empty-state">${escapeHtml(similarSceneAnalysis.message || '正在分析相似场景工单，请稍候...')}</div>`;
+        }
+
+        if (state === 'error') {
+            return `<div class="empty-state is-error">${escapeHtml(similarSceneAnalysis.message || '相似场景分析失败')}</div>`;
+        }
+
+        if (state === 'pending') {
+            return renderBusinessTable([
+                ['当前状态', similarSceneAnalysis.message || '待开始分析'],
+                ['候选工单数', analysis.candidateCount || 0],
+                ['分析来源', formatJiraSimilarAnalysisSource(analysis.source, state)],
+                ['说明', '请点击“开始分析”后触发大模型匹配']
+            ]);
+        }
+
+        if (!matches.length) {
+            return renderBusinessTable([
+                ['当前状态', state === 'loaded' ? '未命中相似场景工单' : '待分析'],
+                ['候选工单数', analysis.candidateCount || 0],
+                ['分析来源', formatJiraSimilarAnalysisSource(analysis.source, state)],
+                ['分析结论', analysis.conclusion || '暂无结果']
+            ]);
+        }
+
+        return `
+            <div class="jira-recent-issues-layout">
+                ${renderJiraSimilarIssuesTable(matches)}
+                ${renderBusinessTable([
+                    ['分析来源', formatJiraSimilarAnalysisSource(analysis.source, state)],
+                    ['候选工单数', analysis.candidateCount || 0],
+                    ['命中工单数', analysis.matchedCount || matches.length],
+                    ['分析结论', analysis.conclusion || '-']
+                ])}
+            </div>
+        `;
+    }
+
+    function renderJiraSimilarIssuesTable(items) {
+        return `
+            <div class="business-table-wrap">
+                <table class="business-table business-table-detail jira-similar-issues-table">
+                    <thead>
+                        <tr>
+                            <th>序号</th>
+                            <th>Jira编号</th>
+                            <th>标题摘要</th>
+                            <th>状态</th>
+                            <th>类型</th>
+                            <th>相似度</th>
+                            <th>匹配原因</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${items.map((item, index) => `
+                            <tr>
+                                <th scope="row">${index + 1}</th>
+                                <td>${escapeHtml(formatPrimitive(item.issueKey))}</td>
+                                <td>${escapeHtml(formatPrimitive(item.summary))}</td>
+                                <td>${escapeHtml(formatPrimitive(item.status))}</td>
+                                <td>${escapeHtml(formatPrimitive(item.type))}</td>
+                                <td>${escapeHtml(formatSimilarityScore(item.similarityScore))}</td>
+                                <td>${escapeHtml(formatPrimitive(item.matchReason))}</td>
+                                <td>
+                                    <button
+                                        type="button"
+                                        class="btn btn-secondary btn-inline btn-mini"
+                                        data-jira-action="view-detail"
+                                        data-issue-id="${escapeHtml(formatPrimitive(item.issueId))}"
+                                        data-issue-key="${escapeHtml(formatPrimitive(item.issueKey))}"
+                                    >
+                                        查看详情
+                                    </button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
             </div>
         `;
     }
@@ -1594,6 +1857,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         const headAction = config.collapsible
             ? renderSectionCollapseToggle(collapseId, collapsed)
             : '';
+        const headExtraAction = config.headActionHtml || '';
         const bodyContent = config.collapsible
             ? `
                 <div class="collapse-block business-section-collapse${collapsed ? ' is-collapsed' : ''}" data-collapse-block="${collapseId}">
@@ -1614,6 +1878,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                         </div>
                         <div class="business-section-note">${escapeHtml(note)}</div>
                     </div>
+                    ${headExtraAction}
                 </div>
                 ${bodyContent}
             </section>
@@ -1807,6 +2072,12 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             return;
         }
 
+        const jiraAnalyzeButton = event.target.closest('[data-jira-action="analyze-similar"]');
+        if (jiraAnalyzeButton) {
+            handleJiraSimilarAnalysisAction(jiraAnalyzeButton);
+            return;
+        }
+
         handleTreeToggle(event);
     }
 
@@ -1948,6 +2219,127 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             },
             authErrorMessage: 'Jira 系统 Cookie 无效，请重新填写后重试'
         });
+    }
+
+    async function requestJiraSimilarIssuesAnalysis(currentIssue, issueTable) {
+        const proxyUrl = buildLocalProxyUrl(CONFIG.tabs.jiraAnalysis.proxyBasePath + '/similar-issues-analysis');
+        const issueList = Array.isArray(issueTable && issueTable.table) ? issueTable.table : [];
+        const payload = {
+            issueKey: currentIssue && currentIssue.key ? currentIssue.key : '',
+            currentSummary: currentIssue && currentIssue.summary ? currentIssue.summary : '',
+            candidates: issueList.map((item) => ({
+                issueKey: item.key || '',
+                issueId: item.id || '',
+                summary: item.summary || '',
+                status: item.status || '-',
+                type: getNestedFieldValue(item, ['type', 'name']) || '-'
+            }))
+        };
+
+        // 提交分析任务
+        const submitResponse = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json; charset=UTF-8'
+            },
+            body: JSON.stringify(payload)
+        });
+        const submitResult = await submitResponse.json();
+
+        if (!submitResult.success) {
+            throw new Error(submitResult.message || '任务提交失败');
+        }
+
+        // 如果立即返回结果（非异步模式）
+        if (submitResult.data.state === 'loaded') {
+            return submitResult;
+        }
+
+        const taskId = submitResult.data.taskId;
+
+        // 轮询查询状态
+        const maxAttempts = 120;
+        const pollInterval = 5000;
+        let attempts = 0;
+        const candidateCount = issueList.length;
+
+        while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+            const statusUrl = buildLocalProxyUrl(CONFIG.tabs.jiraAnalysis.proxyBasePath + '/similar-issues-analysis/status/' + taskId);
+            const statusResponse = await fetch(statusUrl);
+            const statusResult = await statusResponse.json();
+
+            if (statusResult.success && statusResult.data.state === 'loaded') {
+                return statusResult;
+            } else if (!statusResult.success) {
+                throw new Error(statusResult.message || '分析失败');
+            }
+
+            attempts++;
+
+            // 更新进度显示
+            if (elements.panels && elements.panels.jiraAnalysis && currentJiraAnalysisData) {
+                const progressMessage = '正在分析相似工单... (' + (attempts * 5) + '秒)';
+                currentJiraAnalysisData.similarSceneAnalysis = {
+                    state: 'loading',
+                    message: progressMessage,
+                    matches: [],
+                    analysis: {
+                        source: 'loading',
+                        candidateCount: candidateCount,
+                        matchedCount: 0,
+                        conclusion: ''
+                    }
+                };
+                elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+            }
+        }
+
+        throw new Error('分析超时，请稍后重试');
+    }
+
+    async function handleJiraSimilarAnalysisAction(button) {
+        if (!button || button.disabled) {
+            return;
+        }
+
+        if (!currentJiraAnalysisData || !currentJiraAnalysisData.raw) {
+            showToast('当前 Jira 数据尚未加载完成', 'error');
+            return;
+        }
+
+        const rawIssueTable = currentJiraAnalysisData.raw.issueTable;
+        const currentIssue = {
+            key: currentJiraAnalysisData.issueKey || '',
+            id: currentJiraAnalysisData.issueId || '',
+            summary: currentJiraAnalysisData.currentIssueBase ? currentJiraAnalysisData.currentIssueBase.标题 || '' : '',
+            status: currentJiraAnalysisData.status || '-',
+            type: {
+                name: currentJiraAnalysisData.currentIssueBase ? currentJiraAnalysisData.currentIssueBase.类型 || '-' : '-'
+            }
+        };
+
+        button.disabled = true;
+        const originalText = button.textContent;
+        button.textContent = '分析中...';
+
+        currentJiraAnalysisData.similarSceneAnalysis = buildJiraSimilarAnalysisLoadingState(rawIssueTable);
+        elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+
+        try {
+            const analysisResponse = await requestJiraSimilarIssuesAnalysis(currentIssue, rawIssueTable);
+            currentJiraAnalysisData.similarSceneAnalysis = normalizeJiraSimilarIssuesAnalysisResponse(analysisResponse);
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+            showToast('相似场景工单分析完成', 'success');
+        } catch (error) {
+            currentJiraAnalysisData.similarSceneAnalysis = buildJiraSimilarAnalysisErrorState(error, rawIssueTable);
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+            showToast(error.message || '相似场景工单分析失败', 'error');
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
     }
 
     async function handleJiraRecentIssueDetailAction(button) {
@@ -2097,12 +2489,41 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         return response.data || response;
     }
 
+    function formatSimilarityScore(value) {
+        const score = Number(value);
+        if (!Number.isFinite(score)) {
+            return '-';
+        }
+
+        return `${Math.round(score * 100)}%`;
+    }
+
+    function formatJiraSimilarAnalysisSource(source, state) {
+        if (state === 'pending') {
+            return '未触发';
+        }
+
+        if (state === 'loading') {
+            return '分析中';
+        }
+
+        if (source === 'fallback') {
+            return '本地兜底匹配';
+        }
+
+        if (source === 'llm') {
+            return '智能体分析';
+        }
+
+        return '-';
+    }
+
     function findCurrentJiraIssue(issueTable, issueKey) {
         const issueList = Array.isArray(issueTable && issueTable.table) ? issueTable.table : [];
         return issueList.find((item) => normalizeJiraIssueKey(item && item.key) === normalizeJiraIssueKey(issueKey)) || null;
     }
 
-    function buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail) {
+    function buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail, similarSceneAnalysis) {
         const recentIssues = Array.isArray(issueTable && issueTable.table)
             ? issueTable.table.map((item) => ({
                 Jira编号: item.key || '-',
@@ -2142,20 +2563,76 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             },
             currentIssueDetail: detailEntries,
             recentIssues: recentIssues,
-            similarScenePlaceholder: {
-                当前状态: '待接入相似场景分析能力',
-                输入工单号: currentIssue.key || jiraParams.issueKey || '-',
-                说明: '后续由其他 skill、智能体或大模型分析后，返回真正的相似场景工单集合。'
-            },
-            analysisPlaceholder: {
-                当前状态: '待接入智能分析能力',
-                输入工单号: currentIssue.key || jiraParams.issueKey || '-',
-                说明: '后续可在此区域接入智能体、skill 或总结结论。'
-            },
+            similarSceneAnalysis: normalizeJiraSimilarIssuesAnalysisResponse(
+                similarSceneAnalysis || buildJiraSimilarAnalysisPendingState(issueTable)
+            ),
             raw: {
                 issueTable: issueTable,
                 issueDetail: issueDetail
             }
+        };
+    }
+
+    function buildJiraSimilarAnalysisPendingState(issueTable) {
+        return {
+            state: 'pending',
+            message: '待开始分析',
+            matches: [],
+            analysis: {
+                source: 'pending',
+                candidateCount: Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0,
+                matchedCount: 0,
+                conclusion: ''
+            }
+        };
+    }
+
+    function buildJiraSimilarAnalysisLoadingState(issueTable) {
+        return {
+            state: 'loading',
+            message: '正在分析相似场景工单，请稍候...',
+            matches: [],
+            analysis: {
+                source: 'loading',
+                candidateCount: Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0,
+                matchedCount: 0,
+                conclusion: ''
+            }
+        };
+    }
+
+    function buildJiraSimilarAnalysisErrorState(error, issueTable) {
+        return {
+            state: 'error',
+            message: error && error.message ? error.message : '相似场景分析失败',
+            matches: [],
+            analysis: {
+                source: 'error',
+                candidateCount: Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0,
+                matchedCount: 0,
+                conclusion: '相似场景分析未完成'
+            }
+        };
+    }
+
+    function normalizeJiraSimilarIssuesAnalysisResponse(response) {
+        if (!response || typeof response !== 'object') {
+            return {
+                state: 'error',
+                message: '相似场景分析接口返回为空',
+                matches: [],
+                analysis: {}
+            };
+        }
+
+        const payload = response.data && typeof response.data === 'object' ? response.data : response;
+        return {
+            state: payload.state || 'loaded',
+            message: payload.message || '',
+            matches: Array.isArray(payload.matches) ? payload.matches : [],
+            analysis: payload.analysis && typeof payload.analysis === 'object'
+                ? Object.assign({ source: 'llm' }, payload.analysis)
+                : { source: 'llm' }
         };
     }
 
@@ -2469,15 +2946,24 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 recentIssues: [
                     { Jira编号: params.jiraIssueKey || 'UPESN-415300', issueId: 8877099, 标题: '审批轨迹查询偶发超时', 状态: '处理中', 类型: '支持问题' }
                 ],
-                similarScenePlaceholder: {
-                    当前状态: '待接入相似场景分析能力',
-                    输入工单号: params.jiraIssueKey || 'UPESN-415300',
-                    说明: '后续由其他 skill、智能体或大模型分析后，返回真正的相似场景工单集合。'
-                },
-                analysisPlaceholder: {
-                    当前状态: '当前仍使用 mock 数据',
-                    输入工单号: params.jiraIssueKey || 'UPESN-415300',
-                    说明: '后续可在此区域接入智能体、skill 或总结结论。'
+                similarSceneAnalysis: {
+                    state: 'loaded',
+                    matches: [
+                        {
+                            issueKey: 'UPESN-415210',
+                            issueId: 8877001,
+                            summary: '草稿箱提交后审批未触发，用户希望支持批量提交处理',
+                            status: '已解决',
+                            type: '支持问题',
+                            similarityScore: 0.86,
+                            matchReason: '草稿箱批量提交与审批触发问题的语义描述接近'
+                        }
+                    ],
+                    analysis: {
+                        candidateCount: 3,
+                        matchedCount: 1,
+                        conclusion: 'Mock 数据中命中 1 条相似场景工单'
+                    }
                 }
             }
         };
