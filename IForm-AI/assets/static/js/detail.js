@@ -39,6 +39,7 @@
     const JIRA_COOKIE_STORAGE_KEY = CONFIG.storageKey + '_jira_cookie';
     const JIRA_RECENT_ISSUES_PAGE_SIZE = 10;
     const collapseStateStore = {};
+    const PARAM_DEPENDENT_TAB_KEYS = ['formConfig', 'document', 'approval'];
     let currentParams = null;
     let currentJiraAnalysisData = null;
     let currentLoadSequence = 0;
@@ -60,6 +61,22 @@
             aiAnalysis: document.getElementById('panel-aiAnalysis'),
             jiraAnalysis: document.getElementById('panel-jiraAnalysis')
         },
+        coreParamBlock: document.getElementById('coreParamBlock'),
+        detailEnvironmentInput: document.getElementById('detailEnvironmentInput'),
+        detailAuthTypeInput: document.getElementById('detailAuthTypeInput'),
+        detailFormParamModeInput: document.getElementById('detailFormParamModeInput'),
+        detailYtenantIdInput: document.getElementById('detailYtenantIdInput'),
+        detailManualParamGroup: document.getElementById('detailManualParamGroup'),
+        detailPkBoInput: document.getElementById('detailPkBoInput'),
+        detailPkBoinsInput: document.getElementById('detailPkBoinsInput'),
+        detailUrlParamGroup: document.getElementById('detailUrlParamGroup'),
+        detailBillUrlInput: document.getElementById('detailBillUrlInput'),
+        detailSsoGroup: document.getElementById('detailSsoGroup'),
+        detailTokenGroup: document.getElementById('detailTokenGroup'),
+        detailSsoUrlInput: document.getElementById('detailSsoUrlInput'),
+        detailSecretKeyInput: document.getElementById('detailSecretKeyInput'),
+        detailLinkPasswordInput: document.getElementById('detailLinkPasswordInput'),
+        detailYhtAccessTokenInput: document.getElementById('detailYhtAccessTokenInput'),
         aiAnalyzeBtn: document.getElementById('aiAnalyzeBtn'),
         jiraIssueKeyInput: document.getElementById('jiraIssueKeyInput'),
         jiraKeywordInput: document.getElementById('jiraKeywordInput'),
@@ -72,6 +89,14 @@
     function handleAIAnalyzeClick() {
         if (!currentParams) {
             showToast('请先加载业务数据', 'error');
+            return;
+        }
+
+        if (!hasCoreBusinessDataReady()) {
+            if (elements.panels.aiAnalysis) {
+                elements.panels.aiAnalysis.innerHTML = renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
+            }
+            showToast('请先补充表单参数并加载核心页签后再使用 AI智能分析', 'error');
             return;
         }
 
@@ -218,10 +243,13 @@
 
     // ==================== 原有函数 ====================
     function init() {
+        hydrateEnvironmentOptions();
         bindEvents();
 
         currentParams = getRequestParams();
         hydrateJiraControls(currentParams);
+        hydrateCoreParamControls(currentParams);
+        syncCoreParamBlockVisibility(currentParams);
 
         if (!currentParams) {
             renderMissingParams();
@@ -230,17 +258,11 @@
 
         renderSummary(currentParams);
         loadAllTabs(currentParams);
+        activateInitialTab(currentParams);
     }
 
     function bindEvents() {
-        elements.reloadBtn.addEventListener('click', () => {
-            const params = getRequestParams();
-            if (params) {
-                currentParams = params;
-                hydrateJiraControls(currentParams);
-                loadAllTabs(params, true);
-            }
-        });
+        elements.reloadBtn.addEventListener('click', handleReloadClick);
 
         elements.tabButtons.forEach((button) => {
             button.addEventListener('click', () => activateTab(button.dataset.tab));
@@ -270,8 +292,32 @@
             elements.jiraCookieClearBtn.addEventListener('click', handleJiraCookieClearClick);
         }
 
+        if (elements.detailAuthTypeInput) {
+            elements.detailAuthTypeInput.addEventListener('change', syncDetailAuthMode);
+        }
+
+        if (elements.detailFormParamModeInput) {
+            elements.detailFormParamModeInput.addEventListener('change', syncDetailFormParamMode);
+        }
+
         if (elements.aiAnalyzeBtn) {
             elements.aiAnalyzeBtn.addEventListener('click', handleAIAnalyzeClick);
+        }
+    }
+
+    function handleReloadClick() {
+        if (elements.coreParamBlock) {
+            handleCoreParamsApplyClickV2();
+            return;
+        }
+
+        const params = getRequestParams();
+        if (params) {
+            currentParams = params;
+            hydrateJiraControls(currentParams);
+            hydrateCoreParamControls(currentParams);
+            syncCoreParamBlockVisibility(currentParams);
+            loadAllTabs(params, true);
         }
     }
 
@@ -289,18 +335,14 @@
             ssoUrl: url.searchParams.get('ssoUrl') || '',
             secretKey: url.searchParams.get('secretKey') || '',
             linkPassword: url.searchParams.get('linkPassword') || '',
-            yht_access_token: url.searchParams.get('yht_access_token') || url.searchParams.get('yhtToken') || ''
+            yht_access_token: url.searchParams.get('yht_access_token') || url.searchParams.get('yhtToken') || '',
+            entryMode: url.searchParams.get('entryMode') || '',
+            activeTab: url.searchParams.get('activeTab') || ''
         };
 
-        const hasRequired =
-            params.environment &&
-            params.authType &&
-            params.pkBo &&
-            params.pkBoins &&
-            ((params.authType === 'sso' && params.ssoUrl && params.secretKey) ||
-                (isTokenAuth(params.authType) && params.yht_access_token));
+        const hasUsableContext = hasBasicAccessContext(params) || hasJiraEntryContext(params);
 
-        if (hasRequired) {
+        if (hasUsableContext) {
             saveParamsToStorage(params);
             return params;
         }
@@ -311,7 +353,8 @@
         }
 
         try {
-            return JSON.parse(saved);
+            const savedParams = JSON.parse(saved);
+            return savedParams && typeof savedParams === 'object' ? savedParams : null;
         } catch (error) {
             console.error('Failed to parse cached params:', error);
             return null;
@@ -335,42 +378,61 @@
 
         const loadSequence = ++currentLoadSequence;
         const runtimeContext = { shared: {} };
-        const primaryResults = await Promise.allSettled(
-            PRIMARY_TAB_KEYS.map((tabKey) => requestTabData(tabKey, params, environmentConfig.baseUrl, runtimeContext))
-        );
+        const canLoadCoreTabs = hasCoreTabAccess(params);
+        let successCount = 0;
+
+        if (canLoadCoreTabs) {
+            const primaryResults = await Promise.allSettled(
+                PRIMARY_TAB_KEYS.map((tabKey) => requestTabData(tabKey, params, environmentConfig.baseUrl, runtimeContext))
+            );
+
+            if (loadSequence !== currentLoadSequence) {
+                return;
+            }
+
+            primaryResults.forEach((result, index) => {
+                const tabKey = PRIMARY_TAB_KEYS[index];
+                if (result.status === 'fulfilled') {
+                    elements.panels[tabKey].innerHTML = renderTabValue(tabKey, result.value);
+                    successCount += 1;
+                } else {
+                    elements.panels[tabKey].innerHTML = renderErrorBlock(result.reason);
+                }
+            });
+
+            syncAIAnalyzeButtonState(successCount === PRIMARY_TAB_KEYS.length);
+        } else {
+            renderCoreTabsDependencyState();
+            elements.panels.businessLog.innerHTML = renderTabValue('businessLog', buildMockTabData('businessLog', params));
+            elements.panels.aiAnalysis.innerHTML = renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
+            syncAIAnalyzeButtonState(false);
+        }
 
         if (loadSequence !== currentLoadSequence) {
             return;
         }
 
-        let successCount = 0;
-        primaryResults.forEach((result, index) => {
-            const tabKey = PRIMARY_TAB_KEYS[index];
-            if (result.status === 'fulfilled') {
-                elements.panels[tabKey].innerHTML = renderTabValue(tabKey, result.value);
-                successCount += 1;
-            } else {
-                elements.panels[tabKey].innerHTML = renderErrorBlock(result.reason);
-            }
-        });
-
-        if (successCount === PRIMARY_TAB_KEYS.length) {
+        if (canLoadCoreTabs && successCount === PRIMARY_TAB_KEYS.length) {
             setStatus('核心页签已加载', 'is-success');
             if (!silent) {
                 showToast('表单相关页签已优先加载', 'success');
             }
-        } else if (successCount > 0) {
+        } else if (canLoadCoreTabs && successCount > 0) {
             setStatus('部分成功', 'is-loading');
             showToast('部分页签加载失败，请检查配置或接口', 'error');
         } else {
-            setStatus('加载失败', 'is-error');
-            showToast('详情数据加载失败，请检查配置或接口', 'error');
+            setStatus(canLoadCoreTabs ? '加载失败' : '等待补参', canLoadCoreTabs ? 'is-error' : 'is-loading');
+            if (!canLoadCoreTabs && !silent) {
+                showToast('已进入快捷模式，可先使用 Jira 页签；核心页签需补充表单参数后加载', 'info');
+            } else if (canLoadCoreTabs) {
+                showToast('详情数据加载失败，请检查配置或接口', 'error');
+            }
         }
 
-        loadJiraTabAsync(params, runtimeContext, loadSequence, successCount);
+        loadJiraTabAsync(params, runtimeContext, loadSequence, successCount, canLoadCoreTabs);
     }
 
-    async function loadJiraTabAsync(params, runtimeContext, loadSequence, primarySuccessCount) {
+    async function loadJiraTabAsync(params, runtimeContext, loadSequence, primarySuccessCount, canLoadCoreTabs) {
         try {
             const jiraValue = await requestJiraAnalysisData(params, runtimeContext);
             if (loadSequence !== currentLoadSequence) {
@@ -380,7 +442,7 @@
             elements.panels[JIRA_TAB_KEY].innerHTML = renderTabValue(JIRA_TAB_KEY, jiraValue);
             const isPending = jiraValue && jiraValue.state === 'pending';
 
-            if (primarySuccessCount === PRIMARY_TAB_KEYS.length && !isPending) {
+            if ((canLoadCoreTabs ? primarySuccessCount === PRIMARY_TAB_KEYS.length : true) && !isPending) {
                 setStatus('加载完成', 'is-success');
             }
         } catch (error) {
@@ -778,6 +840,191 @@
         if (elements.jiraCookieInput) {
             elements.jiraCookieInput.value = loadJiraCookieFromStorage();
         }
+    }
+
+    function hydrateEnvironmentOptions() {
+        if (!elements.detailEnvironmentInput) {
+            return;
+        }
+
+        const environments = CONFIG.environments || {};
+        const preferredOrder = ['test', 'daily', 'pre', 'core1', 'core2', 'core3', 'core4', 'shangkai', 'overseas', 'c1', 'c2', 'c3', 'c4'];
+        const renderedKeys = [];
+
+        preferredOrder.forEach((key) => {
+            if (environments[key] && renderedKeys.indexOf(key) < 0) {
+                renderedKeys.push(key);
+            }
+        });
+
+        Object.keys(environments).forEach((key) => {
+            if (renderedKeys.indexOf(key) < 0) {
+                renderedKeys.push(key);
+            }
+        });
+
+        elements.detailEnvironmentInput.innerHTML = renderedKeys.map((key) => {
+            const item = environments[key] || {};
+            return `<option value="${escapeHtml(key)}">${escapeHtml(item.label || key)}</option>`;
+        }).join('');
+    }
+
+    function hydrateCoreParamControls(params) {
+        const nextParams = params || {};
+
+        ensureSelectHasValue(elements.detailEnvironmentInput, nextParams.environment || 'test');
+
+        if (elements.detailAuthTypeInput) {
+            elements.detailAuthTypeInput.value = normalizeAuthType(nextParams.authType || 'yht_access_token');
+        }
+
+        if (elements.detailFormParamModeInput) {
+            elements.detailFormParamModeInput.value = normalizeFormParamMode(nextParams.formParamMode || 'manual');
+        }
+
+        if (elements.detailYtenantIdInput) {
+            elements.detailYtenantIdInput.value = nextParams.ytenant_id || '';
+        }
+
+        if (elements.detailBillUrlInput) {
+            elements.detailBillUrlInput.value = nextParams.billUrl || '';
+        }
+
+        if (elements.detailPkBoInput) {
+            elements.detailPkBoInput.value = nextParams.pkBo || '';
+        }
+
+        if (elements.detailPkBoinsInput) {
+            elements.detailPkBoinsInput.value = nextParams.pkBoins || '';
+        }
+
+        if (elements.detailSsoUrlInput) {
+            elements.detailSsoUrlInput.value = nextParams.ssoUrl || '';
+        }
+
+        if (elements.detailSecretKeyInput) {
+            elements.detailSecretKeyInput.value = nextParams.secretKey || '';
+        }
+
+        if (elements.detailLinkPasswordInput) {
+            elements.detailLinkPasswordInput.value = nextParams.linkPassword || '';
+        }
+
+        if (elements.detailYhtAccessTokenInput) {
+            elements.detailYhtAccessTokenInput.value = nextParams.yht_access_token || '';
+        }
+
+        syncDetailFormParamMode();
+        syncDetailAuthMode();
+    }
+
+    function syncCoreParamBlockVisibility(params) {
+        if (!elements.coreParamBlock) {
+            return;
+        }
+
+        elements.coreParamBlock.classList.toggle('is-hidden', hasCoreTabAccess(params));
+    }
+
+    function syncDetailFormParamMode() {
+        const formParamMode = normalizeFormParamMode(elements.detailFormParamModeInput ? elements.detailFormParamModeInput.value : '');
+        const isManual = formParamMode === 'manual';
+
+        if (elements.detailManualParamGroup) {
+            elements.detailManualParamGroup.classList.toggle('is-hidden', !isManual);
+        }
+
+        if (elements.detailUrlParamGroup) {
+            elements.detailUrlParamGroup.classList.toggle('is-hidden', isManual);
+        }
+    }
+
+    function syncDetailAuthMode() {
+        const authType = normalizeAuthType(elements.detailAuthTypeInput ? elements.detailAuthTypeInput.value : '');
+        const isSso = authType === 'sso';
+
+        if (elements.detailSsoGroup) {
+            elements.detailSsoGroup.classList.toggle('is-hidden', !isSso);
+        }
+
+        if (elements.detailTokenGroup) {
+            elements.detailTokenGroup.classList.toggle('is-hidden', isSso);
+        }
+    }
+
+    function handleCoreParamsApplyClick() {
+        const nextParams = buildCoreParamFormData();
+        const validationError = validateCoreParamFormData(nextParams);
+
+        if (validationError) {
+            showToast(validationError.message, 'error');
+            if (validationError.element && typeof validationError.element.focus === 'function') {
+                validationError.element.focus();
+            }
+            return;
+        }
+
+        currentParams = Object.assign({}, currentParams || {}, nextParams, {
+            entryMode: '',
+            activeTab: ''
+        });
+        saveParamsToStorage(currentParams);
+        hydrateCoreParamControls(currentParams);
+        renderSummary(currentParams);
+        loadAllTabs(currentParams, true);
+        showToast('核心页签参数已更新，正在重新加载', 'success');
+    }
+
+    function buildCoreParamFormData() {
+        return {
+            environment: elements.detailEnvironmentInput ? elements.detailEnvironmentInput.value : '',
+            authType: normalizeAuthType(elements.detailAuthTypeInput ? elements.detailAuthTypeInput.value : ''),
+            ytenant_id: elements.detailYtenantIdInput ? elements.detailYtenantIdInput.value.trim() : '',
+            pkBo: elements.detailPkBoInput ? elements.detailPkBoInput.value.trim() : '',
+            pkBoins: elements.detailPkBoinsInput ? elements.detailPkBoinsInput.value.trim() : '',
+            ssoUrl: elements.detailSsoUrlInput ? elements.detailSsoUrlInput.value.trim() : '',
+            secretKey: elements.detailSecretKeyInput ? elements.detailSecretKeyInput.value.trim() : '',
+            linkPassword: elements.detailLinkPasswordInput ? elements.detailLinkPasswordInput.value.trim() : '',
+            yht_access_token: elements.detailYhtAccessTokenInput ? elements.detailYhtAccessTokenInput.value.trim() : ''
+        };
+    }
+
+    function validateCoreParamFormData(params) {
+        if (!params.environment) {
+            return { message: '请选择环境', element: elements.detailEnvironmentInput };
+        }
+
+        if (!params.authType) {
+            return { message: '请选择授权方式', element: elements.detailAuthTypeInput };
+        }
+
+        if (!params.pkBo) {
+            return { message: '请输入表单Id', element: elements.detailPkBoInput };
+        }
+
+        if (!params.pkBoins) {
+            return { message: '请输入单据Id', element: elements.detailPkBoinsInput };
+        }
+
+        if (params.authType === 'sso') {
+            if (!params.ssoUrl) {
+                return { message: '请输入 SSO 链接地址', element: elements.detailSsoUrlInput };
+            }
+
+            if (!isValidUrl(params.ssoUrl)) {
+                return { message: 'SSO 链接地址格式不正确', element: elements.detailSsoUrlInput };
+            }
+
+            if (!params.secretKey) {
+                return { message: '请输入密钥', element: elements.detailSecretKeyInput };
+            }
+        }
+
+        if (isTokenAuth(params.authType) && !params.yht_access_token) {
+            return { message: '请输入 yht_access_token', element: elements.detailYhtAccessTokenInput };
+        }
+
+        return null;
     }
 
     function handleJiraIssueKeyInput() {
@@ -2406,6 +2653,15 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         `;
     }
 
+    function renderDependencyBlock(message) {
+        return `
+            <div class="empty-state">
+                <div class="error-title">待补充参数</div>
+                <div class="error-message">${escapeHtml(message || '请先补充必要参数')}</div>
+            </div>
+        `;
+    }
+
     function buildJiraPendingState(message, params, jiraParams) {
         return {
             state: 'pending',
@@ -3188,7 +3444,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             ssoUrl: '-',
             secretKey: '-',
             linkPassword: '-',
-            yht_access_token: '-'
+            yht_access_token: '-',
+            entryMode: '',
+            activeTab: ''
         });
 
         TAB_KEYS.forEach((tabKey) => {
@@ -3201,6 +3459,252 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     function setStatus(text, className) {
         elements.status.textContent = text;
         elements.status.className = 'status-chip ' + className;
+    }
+
+    function hasCoreBusinessDataReady() {
+        return Boolean(currentParams && hasCoreTabAccess(currentParams) && elements.aiAnalyzeBtn && !elements.aiAnalyzeBtn.disabled);
+    }
+
+    function syncAIAnalyzeButtonState(enabled) {
+        if (!elements.aiAnalyzeBtn) {
+            return;
+        }
+
+        elements.aiAnalyzeBtn.disabled = !enabled;
+        elements.aiAnalyzeBtn.title = enabled ? '' : '请先补充表单参数并加载核心页签';
+    }
+
+    function hasBasicAccessContext(params) {
+        return Boolean(params && params.environment && params.authType);
+    }
+
+    function hasCoreTabAccess(params) {
+        return Boolean(
+            hasBasicAccessContext(params) &&
+            params.pkBo &&
+            params.pkBoins &&
+            ((params.authType === 'sso' && params.ssoUrl && params.secretKey) ||
+                (isTokenAuth(params.authType) && params.yht_access_token))
+        );
+    }
+
+    function hasJiraEntryContext(params) {
+        return Boolean(hasBasicAccessContext(params) && params.entryMode === 'jira' && params.jiraIssueKey);
+    }
+
+    function renderCoreTabsDependencyState() {
+        PARAM_DEPENDENT_TAB_KEYS.forEach((tabKey) => {
+            elements.panels[tabKey].innerHTML = renderDependencyBlock('当前页签依赖表单Id、单据Id和业务授权参数，请返回首页补充后重新加载');
+        });
+    }
+
+    function activateInitialTab(params) {
+        const preferredTab = params && TAB_KEYS.indexOf(params.activeTab) >= 0 ? params.activeTab : '';
+        if (preferredTab) {
+            activateTab(preferredTab);
+            return;
+        }
+
+        if (params && params.entryMode === 'jira') {
+            activateTab(JIRA_TAB_KEY);
+        }
+    }
+
+    function ensureSelectHasValue(select, value) {
+        if (!select) {
+            return;
+        }
+
+        const options = Array.from(select.options || []);
+        const targetValue = value || (options[0] ? options[0].value : '');
+        const hasTarget = options.some((item) => item.value === targetValue);
+        select.value = hasTarget ? targetValue : (options[0] ? options[0].value : '');
+    }
+
+    function isValidUrl(value) {
+        try {
+            const url = new URL(value);
+            return url.protocol === 'http:' || url.protocol === 'https:';
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function normalizeFormParamMode(value) {
+        return value === 'url' ? 'url' : 'manual';
+    }
+
+    function normalizeEnvironment(value) {
+        const mapping = {
+            core1: 'c1',
+            core2: 'c2',
+            core3: 'c3',
+            core4: 'c4'
+        };
+
+        return mapping[value] || value;
+    }
+
+    function getProxyBase() {
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+            return `${window.location.protocol}//${window.location.hostname}:18080`;
+        }
+
+        return window.location.origin;
+    }
+
+    function doesBillUrlMatchEnvironment(billUrl, environment) {
+        if (!billUrl || !environment || !isValidUrl(billUrl)) {
+            return true;
+        }
+
+        const environmentConfig = CONFIG.environments[normalizeEnvironment(environment)] || CONFIG.environments[environment] || {};
+        const expectedOrigin = environmentConfig.baseUrl || '';
+        if (!expectedOrigin) {
+            return true;
+        }
+
+        try {
+            return new URL(billUrl).origin === expectedOrigin;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function buildCoreParamFormDataV2() {
+        return {
+            environment: elements.detailEnvironmentInput ? elements.detailEnvironmentInput.value : '',
+            authType: normalizeAuthType(elements.detailAuthTypeInput ? elements.detailAuthTypeInput.value : ''),
+            formParamMode: normalizeFormParamMode(elements.detailFormParamModeInput ? elements.detailFormParamModeInput.value : ''),
+            ytenant_id: elements.detailYtenantIdInput ? elements.detailYtenantIdInput.value.trim() : '',
+            billUrl: elements.detailBillUrlInput ? elements.detailBillUrlInput.value.trim() : '',
+            pkBo: elements.detailPkBoInput ? elements.detailPkBoInput.value.trim() : '',
+            pkBoins: elements.detailPkBoinsInput ? elements.detailPkBoinsInput.value.trim() : '',
+            ssoUrl: elements.detailSsoUrlInput ? elements.detailSsoUrlInput.value.trim() : '',
+            secretKey: elements.detailSecretKeyInput ? elements.detailSecretKeyInput.value.trim() : '',
+            linkPassword: elements.detailLinkPasswordInput ? elements.detailLinkPasswordInput.value.trim() : '',
+            yht_access_token: elements.detailYhtAccessTokenInput ? elements.detailYhtAccessTokenInput.value.trim() : ''
+        };
+    }
+
+    function validateCoreParamFormDataV2(params) {
+        if (!params.environment) {
+            return { message: '请选择环境', element: elements.detailEnvironmentInput };
+        }
+
+        if (!params.authType) {
+            return { message: '请选择授权方式', element: elements.detailAuthTypeInput };
+        }
+
+        if (!params.formParamMode) {
+            return { message: '请选择表单参数设置方式', element: elements.detailFormParamModeInput };
+        }
+
+        if (params.formParamMode === 'manual') {
+            if (!params.pkBo) {
+                return { message: '请输入表单Id', element: elements.detailPkBoInput };
+            }
+
+            if (!params.pkBoins) {
+                return { message: '请输入单据Id', element: elements.detailPkBoinsInput };
+            }
+        }
+
+        if (params.formParamMode === 'url') {
+            if (!params.billUrl) {
+                return { message: '请输入单据链接 URL', element: elements.detailBillUrlInput };
+            }
+
+            if (!isValidUrl(params.billUrl)) {
+                return { message: '单据链接 URL 格式不正确', element: elements.detailBillUrlInput };
+            }
+
+            if (!doesBillUrlMatchEnvironment(params.billUrl, params.environment)) {
+                return { message: '单据链接 URL 与当前环境不匹配，请检查后重试', element: elements.detailBillUrlInput };
+            }
+        }
+
+        if (params.authType === 'sso') {
+            if (!params.ssoUrl) {
+                return { message: '请输入 SSO 链接地址', element: elements.detailSsoUrlInput };
+            }
+
+            if (!isValidUrl(params.ssoUrl)) {
+                return { message: 'SSO 链接地址格式不正确', element: elements.detailSsoUrlInput };
+            }
+
+            if (!params.secretKey) {
+                return { message: '请输入密钥', element: elements.detailSecretKeyInput };
+            }
+        }
+
+        if (isTokenAuth(params.authType) && !params.yht_access_token) {
+            return { message: '请输入 yht_access_token', element: elements.detailYhtAccessTokenInput };
+        }
+
+        return null;
+    }
+
+    async function resolveDetailFormParamsFromUrlV2(params) {
+        const apiUrl = new URL('/api/resolve-form-params', getProxyBase());
+        apiUrl.searchParams.set('env', normalizeEnvironment(params.environment));
+        apiUrl.searchParams.set('url', params.billUrl);
+
+        const response = await fetch(apiUrl.toString(), {
+            method: 'GET',
+            headers: {
+                yht_access_token: params.yht_access_token
+            }
+        });
+
+        const result = await response.json().catch(() => null);
+        if (!response.ok || !result || result.success === false) {
+            throw new Error(
+                (result && result.error && result.error.message) ||
+                '解析单据链接失败'
+            );
+        }
+
+        if (!result.data || !result.data.formId || !result.data.formInstanceId) {
+            throw new Error('单据链接中未解析到 formId 或 formInstanceId');
+        }
+
+        return Object.assign({}, params, {
+            pkBo: result.data.formId,
+            pkBoins: result.data.formInstanceId
+        });
+    }
+
+    async function handleCoreParamsApplyClickV2() {
+        let nextParams = buildCoreParamFormDataV2();
+        const validationError = validateCoreParamFormDataV2(nextParams);
+
+        if (validationError) {
+            showToast(validationError.message, 'error');
+            if (validationError.element && typeof validationError.element.focus === 'function') {
+                validationError.element.focus();
+            }
+            return;
+        }
+
+        try {
+            if (nextParams.formParamMode === 'url') {
+                nextParams = await resolveDetailFormParamsFromUrlV2(nextParams);
+            }
+
+            currentParams = Object.assign({}, currentParams || {}, nextParams, {
+                entryMode: '',
+                activeTab: ''
+            });
+            saveParamsToStorage(currentParams);
+            hydrateCoreParamControls(currentParams);
+            syncCoreParamBlockVisibility(currentParams);
+            renderSummary(currentParams);
+            loadAllTabs(currentParams, true);
+            showToast('核心页签参数已更新，正在重新加载', 'success');
+        } catch (error) {
+            showToast(error.message || '解析单据链接失败', 'error');
+        }
     }
 
     function showToast(message, type) {

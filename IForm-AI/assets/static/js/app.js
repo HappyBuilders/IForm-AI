@@ -36,6 +36,7 @@
         urlParamGroup: document.getElementById('urlParamGroup'),
         ssoAuthGroup: document.getElementById('ssoAuthGroup'),
         tokenAuthGroup: document.getElementById('tokenAuthGroup'),
+        jiraQuickEnterBtn: document.getElementById('jiraQuickEnterBtn'),
         submitBtn: document.querySelector('.btn-primary'),
         btnText: document.querySelector('.btn-text'),
         btnLoading: document.querySelector('.btn-loading'),
@@ -56,6 +57,9 @@
 
         elements.form.addEventListener('submit', handleSubmit);
         elements.form.addEventListener('reset', handleReset);
+        if (elements.jiraQuickEnterBtn) {
+            elements.jiraQuickEnterBtn.addEventListener('click', handleJiraQuickEnter);
+        }
         elements.environment.addEventListener('change', () => {
             syncEnvironmentDependentFields();
             saveHandler();
@@ -83,7 +87,7 @@
         event.preventDefault();
 
         let formData = getFormData();
-        if (!validateForm(formData)) {
+        if (!validateForm(formData, 'full')) {
             return;
         }
 
@@ -101,6 +105,19 @@
             showToast(error.message || '解析单据链接失败', 'error');
             setLoading(false);
         }
+    }
+
+    function handleJiraQuickEnter() {
+        const formData = getFormData();
+        if (!validateForm(formData, 'jira')) {
+            return;
+        }
+
+        saveToStorage(formData);
+        navigateToDetail(Object.assign({}, formData, {
+            entryMode: 'jira',
+            activeTab: 'jiraAnalysis'
+        }));
     }
 
     function handleReset() {
@@ -132,7 +149,9 @@
         };
     }
 
-    function validateForm(data) {
+    function validateForm(data, mode) {
+        const validateMode = mode === 'jira' ? 'jira' : 'full';
+
         if (!data.environment) {
             elements.environment.focus();
             showToast('请选择环境', 'error');
@@ -143,6 +162,10 @@
             elements.formParamMode.focus();
             showToast('请选择表单参数设置方式', 'error');
             return false;
+        }
+
+        if (validateMode === 'jira') {
+            return true;
         }
 
         if (data.formParamMode === 'manual') {

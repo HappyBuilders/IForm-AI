@@ -623,3 +623,45 @@ window.IFormDetailConfig = {
 2. The frontend `近期工单列表` should render only `10` rows per page.
 3. The recent-issue table should use frontend pagination controls to switch visible rows without re-requesting the Jira issue-table API.
 4. The pagination toolbar should support `首页`, `上一页`, page-number buttons, `下一页`, and `末页`.
+
+## 15. Current Effective Requirement Updates On 2026-04-29
+
+### 15.1 Homepage Quick Entry Rules
+
+1. The homepage must provide a secondary action named `快捷分析Jira`.
+2. Clicking `快捷分析Jira` should navigate directly to the detail page and activate the `Jira问题分析` tab.
+3. The homepage quick Jira entry must not require `Jira工单号`.
+4. The homepage quick Jira entry should still preserve already entered homepage parameters and carry them to the detail page when present.
+5. The homepage full-detail entry continues to follow the original complete parameter validation rules.
+
+### 15.2 Detail Page Tab-Level Dependency Rules
+
+1. The detail page must support direct entry even when the homepage has not provided a complete core business context.
+2. `Jira问题分析` and `AI智能分析` should be allowed to render independently from the core form data when their own tab-level prerequisites are satisfied.
+3. Tabs that depend on core business parameters, including `表单配置信息`, `单据数据信息`, and `流程审批信息`, must still enforce their required parameters before loading.
+4. Missing prerequisites for one tab must not block users from entering and using other tabs that do not depend on those parameters.
+
+### 15.3 Inline Core Parameter Supplement Rules
+
+1. The detail sidebar must provide an inline `核心页签补参` area for completing missing core parameters when the current request context is insufficient for core tabs.
+2. The `核心页签补参` area must use the same parameter semantics as the homepage, including:
+   - `环境`
+   - `授权方式`
+   - `表单参数设置方式`
+   - `租户 ID（ytenant_id）`
+   - `表单Id（pkBo）`
+   - `单据Id（pkBoins）`
+   - `单据链接 URL`
+   - `SSO 链接地址（ssoUrl）`
+   - `密钥（secretKey）`
+   - `链接密码（linkPassword）`
+   - `yht_access_token`
+3. The detail-page supplement area should present only parameter names and input controls, without extra descriptive blocks or split business sections.
+4. The existing `重新加载` button must act as the unified trigger for applying supplemented parameters and reloading the required content.
+5. A separate `保存并重载核心页签` button must not be rendered.
+6. When the current detail context already satisfies core-tab access requirements, the `核心页签补参` area must be hidden.
+
+### 15.4 Jira Tab Validation Boundary
+
+1. Entering the detail page through `快捷分析Jira` must not be blocked by a missing `Jira工单号`.
+2. Any Jira-specific required-field interception should happen inside the `Jira问题分析` tab when users perform the concrete Jira loading action.

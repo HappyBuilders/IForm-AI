@@ -34,6 +34,114 @@
 
                 <div class="summary-grid summary-grid-sidebar" id="summaryGrid"></div>
 
+                <section class="auth-block detail-param-block" id="coreParamBlock">
+                    <div class="auth-block-head">
+                        <div class="auth-block-title">核心页签补参</div>
+                    </div>
+
+                    <div class="form-grid detail-param-grid detail-param-grid-single">
+                        <div class="form-group">
+                            <label for="detailEnvironmentInput" class="form-label">
+                                <span class="label-text">环境</span>
+                                <span class="required">*</span>
+                            </label>
+                            <select id="detailEnvironmentInput" class="form-input form-select"></select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="detailAuthTypeInput" class="form-label">
+                                <span class="label-text">授权方式</span>
+                                <span class="required">*</span>
+                            </label>
+                            <select id="detailAuthTypeInput" class="form-input form-select">
+                                <option value="sso">sso授权</option>
+                                <option value="yht_access_token">yht_access_token 授权</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="detailFormParamModeInput" class="form-label">
+                                <span class="label-text">表单参数设置方式</span>
+                                <span class="required">*</span>
+                            </label>
+                            <select id="detailFormParamModeInput" class="form-input form-select">
+                                <option value="manual">表单Id + 单据Id</option>
+                                <option value="url">单据链接 URL</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="detailYtenantIdInput" class="form-label">
+                                <span class="label-text">租户 ID（ytenant_id）</span>
+                            </label>
+                            <input type="text" id="detailYtenantIdInput" class="form-input" placeholder="可选">
+                        </div>
+                    </div>
+
+                    <div class="form-grid detail-param-grid" id="detailManualParamGroup">
+                        <div class="form-group">
+                            <label for="detailPkBoInput" class="form-label">
+                                <span class="label-text">表单Id（pkBo）</span>
+                                <span class="required">*</span>
+                            </label>
+                            <input type="text" id="detailPkBoInput" class="form-input" placeholder="请输入表单Id">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="detailPkBoinsInput" class="form-label">
+                                <span class="label-text">单据Id（pkBoins）</span>
+                                <span class="required">*</span>
+                            </label>
+                            <input type="text" id="detailPkBoinsInput" class="form-input" placeholder="请输入单据Id">
+                        </div>
+                    </div>
+
+                    <div class="form-grid detail-param-grid is-hidden" id="detailUrlParamGroup">
+                        <div class="form-group form-group-full">
+                            <label for="detailBillUrlInput" class="form-label">
+                                <span class="label-text">单据链接 URL</span>
+                                <span class="required">*</span>
+                            </label>
+                            <input type="url" id="detailBillUrlInput" class="form-input" placeholder="请输入单据链接 URL">
+                        </div>
+                    </div>
+
+                    <div class="form-grid detail-param-grid" id="detailSsoGroup">
+                        <div class="form-group form-group-full">
+                            <label for="detailSsoUrlInput" class="form-label">
+                                <span class="label-text">SSO 链接地址（ssoUrl）</span>
+                                <span class="required">*</span>
+                            </label>
+                            <input type="url" id="detailSsoUrlInput" class="form-input" placeholder="请输入 SSO 链接地址">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="detailSecretKeyInput" class="form-label">
+                                <span class="label-text">密钥（secretKey）</span>
+                                <span class="required">*</span>
+                            </label>
+                            <input type="text" id="detailSecretKeyInput" class="form-input" placeholder="请输入密钥">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="detailLinkPasswordInput" class="form-label">
+                                <span class="label-text">链接密码（linkPassword）</span>
+                            </label>
+                            <input type="text" id="detailLinkPasswordInput" class="form-input" placeholder="没有可不填">
+                        </div>
+                    </div>
+
+                    <div class="form-grid detail-param-grid is-hidden" id="detailTokenGroup">
+                        <div class="form-group form-group-full">
+                            <label for="detailYhtAccessTokenInput" class="form-label">
+                                <span class="label-text">yht_access_token</span>
+                                <span class="required">*</span>
+                            </label>
+                            <input type="text" id="detailYhtAccessTokenInput" class="form-input" placeholder="请输入 yht_access_token">
+                        </div>
+                    </div>
+                </section>
+
                 <div class="sidebar-actions">
                     <button type="button" class="btn btn-primary btn-inline" id="reloadBtn">重新加载</button>
                     <a class="btn btn-secondary btn-inline" href="./index.html">修改参数</a>
