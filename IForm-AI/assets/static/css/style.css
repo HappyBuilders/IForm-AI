@@ -454,10 +454,120 @@ body {
     gap: 12px;
 }
 
+.jira-similar-analysis-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.jira-similar-analysis-status {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgba(21, 91, 148, 0.08);
+    color: var(--accent-1);
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
 .jira-recent-issues-layout {
     display: flex;
     flex-direction: column;
     gap: 14px;
+}
+
+.jira-recent-issues-pagination {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid rgba(18, 74, 118, 0.08);
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(247, 251, 255, 0.96), rgba(240, 247, 252, 0.9));
+}
+
+.jira-recent-issues-pagination.is-single-page {
+    gap: 0;
+}
+
+.jira-recent-issues-pagination-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding-top: 2px;
+}
+
+.jira-recent-issues-pagination-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.jira-recent-issues-pagination-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    min-height: 38px;
+    padding: 0 14px;
+    border: 1px solid rgba(18, 74, 118, 0.08);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.82);
+    color: var(--text-main);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.jira-recent-issues-pagination-label {
+    color: var(--text-sub);
+    font-size: 0.77rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.jira-recent-issues-pagination-stat strong {
+    color: var(--accent-1);
+    font-size: 0.96rem;
+    font-weight: 800;
+}
+
+.jira-recent-issues-pagination .btn-mini {
+    min-width: 56px;
+    min-height: 36px;
+    padding: 0 12px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+}
+
+.jira-recent-issues-pagination .btn-mini.is-active {
+    background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+    color: #fff;
+    box-shadow: 0 10px 18px rgba(21, 91, 148, 0.18);
+}
+
+.jira-recent-issues-pagination .btn-secondary:not(:disabled):hover {
+    border-color: rgba(21, 91, 148, 0.24);
+    box-shadow: 0 8px 16px rgba(21, 91, 148, 0.08);
+}
+
+.jira-recent-issues-pagination .btn-mini:disabled {
+    opacity: 0.56;
+    cursor: default;
+    box-shadow: none;
+}
+
+.jira-recent-issues-pagination-ellipsis {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    color: var(--text-subtle);
+    font-weight: 700;
 }
 
 .jira-inline-detail-block {

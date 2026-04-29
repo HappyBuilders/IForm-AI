@@ -37,6 +37,8 @@
     const JIRA_TAB_KEY = 'jiraAnalysis';
     const AI_ANALYSIS_TAB_KEY = 'aiAnalysis';
     const JIRA_COOKIE_STORAGE_KEY = CONFIG.storageKey + '_jira_cookie';
+    const JIRA_RECENT_ISSUES_PAGE_SIZE = 10;
+    const collapseStateStore = {};
     let currentParams = null;
     let currentJiraAnalysisData = null;
     let currentLoadSequence = 0;
@@ -1504,15 +1506,21 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         }
 
         currentJiraAnalysisData = value;
+        const mergedIssueDetailEntries = [
+            ...Object.entries(value.currentIssueBase || {}),
+            ...Object.entries(value.currentIssueDetail || {})
+        ];
 
         return `
             <div class="business-data-view">
-                ${renderBusinessSection('当前工单基础信息', '展示当前工单核心属性，并补充关键明细字段。', renderBusinessTable(Object.entries(value.currentIssueBase || {})))}
-                ${renderBusinessSection('工单详细内容', '从 Jira 详情接口 fields[].editHtml 中解析关键字段有效值。', renderBusinessTable(Object.entries(value.currentIssueDetail || {})))}
+                ${renderBusinessSection('工单详细内容', '合并展示当前工单基础信息与 Jira 详情字段内容。', renderBusinessTable(mergedIssueDetailEntries))}
                 ${renderBusinessSection('相似场景工单解析', '基于当前工单 summary 与 Jira 查询结果中的候选工单 summary 做语义匹配后返回命中列表。', renderJiraSimilarIssuesSection(value), {
+                    collapsible: true,
+                    sectionKey: 'jira-similar-issues',
                     headActionHtml: renderJiraSimilarAnalysisAction(value)
                 })}
                 ${renderBusinessSection('近期工单列表', '使用 issueTable.table 展示当前查询条件下返回的近期工单集合，不代表和当前工单存在真实关联。', renderJiraRecentIssuesSection(value), { collapsible: true, sectionKey: 'jira-recent-issues' })}
+                ${renderBusinessSection('列表工单详情', '统一展示从相似场景工单解析或近期工单列表中打开的工单详情。', renderJiraSharedIssueDetailSection(value), { collapsible: true, sectionKey: 'jira-shared-issue-detail' })}
                 ${value.raw ? renderBusinessSection('原始返回数据', '保留 Jira 列表与详情接口原始结构，便于排查解析问题。', renderTreeDetails(Object.entries(value.raw), 0), { collapsible: true, sectionKey: 'jira-raw', collapsed: true }) : ''}
             </div>
         `;
@@ -1521,15 +1529,31 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     function renderJiraSimilarAnalysisAction(value) {
         const similarSceneAnalysis = value && value.similarSceneAnalysis ? value.similarSceneAnalysis : {};
         const isLoading = similarSceneAnalysis.state === 'loading';
+        const analysis = similarSceneAnalysis.analysis || {};
+        const hasMore = Boolean(analysis.hasMore);
+        const hasStarted = Number(analysis.currentBatch || 0) > 0 || Array.isArray(similarSceneAnalysis.matches) && similarSceneAnalysis.matches.length > 0;
         return `
-            <button
-                type="button"
-                class="btn btn-primary btn-inline btn-mini"
-                data-jira-action="analyze-similar"
-                ${isLoading ? 'disabled' : ''}
-            >
-                ${isLoading ? '分析中...' : '开始分析'}
-            </button>
+            <div class="jira-similar-analysis-actions">
+                <button
+                    type="button"
+                    class="btn btn-primary btn-inline btn-mini"
+                    data-jira-action="analyze-similar"
+                    ${isLoading || hasStarted ? 'disabled' : ''}
+                >
+                    ${isLoading && !hasStarted ? '分析中...' : '开始分析'}
+                </button>
+                ${hasStarted && hasMore ? `
+                    <button
+                        type="button"
+                        class="btn btn-secondary btn-inline btn-mini"
+                        data-jira-action="analyze-similar-more"
+                        ${isLoading ? 'disabled' : ''}
+                    >
+                        ${isLoading ? '分析中...' : '分析更多'}
+                    </button>
+                ` : ''}
+                ${hasStarted && !hasMore && !isLoading ? '<span class="jira-similar-analysis-status">没有更多分析工单了</span>' : ''}
+            </div>
         `;
     }
 
@@ -1550,7 +1574,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         if (state === 'pending') {
             return renderBusinessTable([
                 ['当前状态', similarSceneAnalysis.message || '待开始分析'],
-                ['候选工单数', analysis.candidateCount || 0],
+                ['候选工单总数', analysis.candidateCount || 0],
+                ['已分析工单数', analysis.analyzedCount || 0],
+                ['分析批次', `${analysis.currentBatch || 0} / ${analysis.totalBatches || 0}`],
                 ['分析来源', formatJiraSimilarAnalysisSource(analysis.source, state)],
                 ['说明', '请点击“开始分析”后触发大模型匹配']
             ]);
@@ -1558,8 +1584,10 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
 
         if (!matches.length) {
             return renderBusinessTable([
-                ['当前状态', state === 'loaded' ? '未命中相似场景工单' : '待分析'],
-                ['候选工单数', analysis.candidateCount || 0],
+                ['当前状态', state === 'loaded' ? ((analysis.hasMore ? '当前批次未命中相似场景工单' : '未命中相似场景工单')) : '待分析'],
+                ['候选工单总数', analysis.candidateCount || 0],
+                ['已分析工单数', analysis.analyzedCount || 0],
+                ['分析批次', `${analysis.currentBatch || 0} / ${analysis.totalBatches || 0}`],
                 ['分析来源', formatJiraSimilarAnalysisSource(analysis.source, state)],
                 ['分析结论', analysis.conclusion || '暂无结果']
             ]);
@@ -1570,7 +1598,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 ${renderJiraSimilarIssuesTable(matches)}
                 ${renderBusinessTable([
                     ['分析来源', formatJiraSimilarAnalysisSource(analysis.source, state)],
-                    ['候选工单数', analysis.candidateCount || 0],
+                    ['候选工单总数', analysis.candidateCount || 0],
+                    ['已分析工单数', analysis.analyzedCount || 0],
+                    ['分析批次', `${analysis.currentBatch || 0} / ${analysis.totalBatches || 0}`],
                     ['命中工单数', analysis.matchedCount || matches.length],
                     ['分析结论', analysis.conclusion || '-']
                 ])}
@@ -1609,6 +1639,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                                         type="button"
                                         class="btn btn-secondary btn-inline btn-mini"
                                         data-jira-action="view-detail"
+                                        data-detail-source="similar"
                                         data-issue-id="${escapeHtml(formatPrimitive(item.issueId))}"
                                         data-issue-key="${escapeHtml(formatPrimitive(item.issueKey))}"
                                     >
@@ -1629,28 +1660,41 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             return '<div class="empty-state">暂无近期工单</div>';
         }
 
-        const listHtml = renderJiraRecentIssuesTable(recentIssues);
-        const detailBlock = value && value.selectedRecentIssueDetail
-            ? renderCollapsibleBlock(
-                `近期工单详情：${value.selectedRecentIssueDetail.issueKey || '-'}`,
-                renderBusinessTable(Object.entries(value.selectedRecentIssueDetail.detail || {})),
-                {
-                    blockKey: `jira-recent-detail-${value.selectedRecentIssueDetail.issueKey || 'detail'}`,
-                    blockClassName: 'jira-inline-detail-block',
-                    anchorId: 'jira-recent-issue-detail-anchor'
-                }
-            )
-            : '<div class="empty-state">点击列表中的“查看详情”可在此处查看对应工单的详细内容</div>';
+        const pagination = ensureJiraRecentIssuesPagination(value, recentIssues.length);
+        const startIndex = (pagination.currentPage - 1) * pagination.pageSize;
+        const pagedIssues = recentIssues.slice(startIndex, startIndex + pagination.pageSize);
+        const listHtml = renderJiraRecentIssuesTable(pagedIssues, startIndex);
 
         return `
             <div class="jira-recent-issues-layout">
                 ${listHtml}
-                ${detailBlock}
+                ${renderJiraRecentIssuesPagination(pagination, recentIssues.length)}
             </div>
         `;
     }
 
-    function renderJiraRecentIssuesTable(items) {
+    function renderJiraSharedIssueDetailSection(value) {
+        const detailTitlePrefix = value && value.selectedRecentIssueDetail && value.selectedRecentIssueDetail.sourceLabel
+            ? value.selectedRecentIssueDetail.sourceLabel
+            : '工单详情';
+
+        if (!value || !value.selectedRecentIssueDetail) {
+            return '<div class="empty-state">点击“相似场景工单解析”或“近期工单列表”中的“查看详情”可在此处查看对应工单的详细内容</div>';
+        }
+
+        return `
+            <div class="jira-inline-detail-block" id="jira-recent-issue-detail-anchor">
+                <div class="collapse-block-head">
+                    <span class="collapse-block-title">${escapeHtml(`${detailTitlePrefix}：${value.selectedRecentIssueDetail.issueKey || '-'}`)}</span>
+                </div>
+                <div class="collapse-block-body">
+                    ${renderBusinessTable(Object.entries(value.selectedRecentIssueDetail.detail || {}))}
+                </div>
+            </div>
+        `;
+    }
+
+    function renderJiraRecentIssuesTable(items, startIndex) {
         return `
             <div class="business-table-wrap">
                 <table class="business-table business-table-detail jira-recent-issues-table">
@@ -1667,7 +1711,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                     <tbody>
                         ${items.map((item, index) => `
                             <tr>
-                                <th scope="row">${index + 1}</th>
+                                <th scope="row">${startIndex + index + 1}</th>
                                 <td>${escapeHtml(formatPrimitive(item.Jira编号))}</td>
                                 <td>${escapeHtml(formatPrimitive(item.标题))}</td>
                                 <td>${escapeHtml(formatPrimitive(item.状态))}</td>
@@ -1677,6 +1721,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                                         type="button"
                                         class="btn btn-secondary btn-inline btn-mini"
                                         data-jira-action="view-detail"
+                                        data-detail-source="recent"
                                         data-issue-id="${escapeHtml(formatPrimitive(item.issueId))}"
                                         data-issue-key="${escapeHtml(formatPrimitive(item.Jira编号))}"
                                     >
@@ -1689,6 +1734,133 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 </table>
             </div>
         `;
+    }
+
+    function ensureJiraRecentIssuesPagination(value, totalCount) {
+        const pageSize = JIRA_RECENT_ISSUES_PAGE_SIZE;
+        const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+        const currentPage = Math.min(
+            Math.max(Number(value && value.recentIssuesCurrentPage) || 1, 1),
+            totalPages
+        );
+
+        if (value) {
+            value.recentIssuesCurrentPage = currentPage;
+        }
+
+        return {
+            pageSize: pageSize,
+            currentPage: currentPage,
+            totalPages: totalPages
+        };
+    }
+
+    function renderJiraRecentIssuesPagination(pagination, totalCount) {
+        if (!pagination || pagination.totalPages <= 1) {
+            return `
+                <div class="section-head-meta jira-recent-issues-pagination is-single-page">
+                    <div class="jira-recent-issues-pagination-summary">
+                        <span class="jira-recent-issues-pagination-stat">
+                            <span class="jira-recent-issues-pagination-label">总条数</span>
+                            <strong>${totalCount}</strong>
+                        </span>
+                        <span class="jira-recent-issues-pagination-stat">
+                            <span class="jira-recent-issues-pagination-label">当前展示</span>
+                            <strong>${Math.min(totalCount, JIRA_RECENT_ISSUES_PAGE_SIZE)}</strong>
+                        </span>
+                    </div>
+                </div>
+            `;
+        }
+
+        const pageNumbers = buildJiraRecentIssuesPageNumbers(pagination.currentPage, pagination.totalPages);
+
+        return `
+            <div class="section-head-meta jira-recent-issues-pagination">
+                <div class="jira-recent-issues-pagination-summary">
+                    <span class="jira-recent-issues-pagination-stat">
+                        <span class="jira-recent-issues-pagination-label">总条数</span>
+                        <strong>${totalCount}</strong>
+                    </span>
+                    <span class="jira-recent-issues-pagination-stat">
+                        <span class="jira-recent-issues-pagination-label">当前页</span>
+                        <strong>${pagination.currentPage}</strong>
+                    </span>
+                    <span class="jira-recent-issues-pagination-stat">
+                        <span class="jira-recent-issues-pagination-label">总页数</span>
+                        <strong>${pagination.totalPages}</strong>
+                    </span>
+                </div>
+                <div class="jira-recent-issues-pagination-actions">
+                    <button
+                        type="button"
+                        class="btn btn-secondary btn-inline btn-mini"
+                        data-jira-action="recent-page"
+                        data-page="1"
+                        ${pagination.currentPage <= 1 ? 'disabled' : ''}
+                    >
+                        首页
+                    </button>
+                    <button
+                        type="button"
+                        class="btn btn-secondary btn-inline btn-mini"
+                        data-jira-action="recent-page"
+                        data-page="${pagination.currentPage - 1}"
+                        ${pagination.currentPage <= 1 ? 'disabled' : ''}
+                    >
+                        上一页
+                    </button>
+                    ${pageNumbers.map((page) => page === 'ellipsis'
+                        ? '<span class="jira-recent-issues-pagination-ellipsis">...</span>'
+                        : `
+                            <button
+                                type="button"
+                                class="btn btn-secondary btn-inline btn-mini ${page === pagination.currentPage ? 'is-active' : ''}"
+                                data-jira-action="recent-page"
+                                data-page="${page}"
+                                ${page === pagination.currentPage ? 'disabled' : ''}
+                            >
+                                ${page}
+                            </button>
+                        `
+                    ).join('')}
+                    <button
+                        type="button"
+                        class="btn btn-secondary btn-inline btn-mini"
+                        data-jira-action="recent-page"
+                        data-page="${pagination.currentPage + 1}"
+                        ${pagination.currentPage >= pagination.totalPages ? 'disabled' : ''}
+                    >
+                        下一页
+                    </button>
+                    <button
+                        type="button"
+                        class="btn btn-secondary btn-inline btn-mini"
+                        data-jira-action="recent-page"
+                        data-page="${pagination.totalPages}"
+                        ${pagination.currentPage >= pagination.totalPages ? 'disabled' : ''}
+                    >
+                        末页
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+    function buildJiraRecentIssuesPageNumbers(currentPage, totalPages) {
+        if (totalPages <= 7) {
+            return Array.from({ length: totalPages }, (_, index) => index + 1);
+        }
+
+        if (currentPage <= 4) {
+            return [1, 2, 3, 4, 5, 'ellipsis', totalPages];
+        }
+
+        if (currentPage >= totalPages - 3) {
+            return [1, 'ellipsis', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+        }
+
+        return [1, 'ellipsis', currentPage - 1, currentPage, currentPage + 1, 'ellipsis', totalPages];
     }
 
     function renderComponentHierarchyTable(rows, emptyText) {
@@ -1850,10 +2022,10 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
 
     function renderBusinessSection(title, note, body, options) {
         const config = options || {};
-        const collapsed = Boolean(config.collapsed);
         const collapseId = config.collapsible
             ? `collapse-${hashString(String(config.sectionKey || title || 'section'))}`
             : '';
+        const collapsed = config.collapsible ? resolveCollapseState(collapseId, config.collapsed) : Boolean(config.collapsed);
         const headAction = config.collapsible
             ? renderSectionCollapseToggle(collapseId, collapsed)
             : '';
@@ -1902,9 +2074,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
 
     function renderCollapsibleBlock(title, body, options) {
         const config = options || {};
-        const collapsed = Boolean(config.collapsed);
         const blockClassName = config.blockClassName ? ` ${config.blockClassName}` : '';
         const blockKey = `collapse-${hashString(String(config.blockKey || title || 'block'))}`;
+        const collapsed = resolveCollapseState(blockKey, config.collapsed);
         const anchorId = config.anchorId ? ` id="${escapeHtml(config.anchorId)}"` : '';
 
         return `
@@ -1924,6 +2096,18 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 </div>
             </div>
         `;
+    }
+
+    function resolveCollapseState(key, defaultCollapsed) {
+        if (!key) {
+            return Boolean(defaultCollapsed);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(collapseStateStore, key)) {
+            return Boolean(collapseStateStore[key]);
+        }
+
+        return Boolean(defaultCollapsed);
     }
 
     function renderBusinessTable(entries) {
@@ -2072,9 +2256,21 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             return;
         }
 
+        const jiraRecentPageButton = event.target.closest('[data-jira-action="recent-page"]');
+        if (jiraRecentPageButton) {
+            handleJiraRecentIssuesPageAction(jiraRecentPageButton);
+            return;
+        }
+
         const jiraAnalyzeButton = event.target.closest('[data-jira-action="analyze-similar"]');
         if (jiraAnalyzeButton) {
             handleJiraSimilarAnalysisAction(jiraAnalyzeButton);
+            return;
+        }
+
+        const jiraAnalyzeMoreButton = event.target.closest('[data-jira-action="analyze-similar-more"]');
+        if (jiraAnalyzeMoreButton) {
+            handleJiraSimilarAnalysisMoreAction(jiraAnalyzeMoreButton);
             return;
         }
 
@@ -2107,6 +2303,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         }
 
         const isCollapsed = block.classList.toggle('is-collapsed');
+        if (bodyId) {
+            collapseStateStore[bodyId] = isCollapsed;
+        }
         body.hidden = isCollapsed;
         head.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
 
@@ -2255,13 +2454,39 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             return submitResult;
         }
 
-        const taskId = submitResult.data.taskId;
+        return pollJiraSimilarIssuesAnalysisTask(submitResult.data.taskId, issueList.length);
+    }
 
+    async function requestJiraSimilarIssuesAnalysisMore(taskId, candidateCount) {
+        const proxyUrl = buildLocalProxyUrl(CONFIG.tabs.jiraAnalysis.proxyBasePath + '/similar-issues-analysis/continue');
+        const submitResponse = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json; charset=UTF-8'
+            },
+            body: JSON.stringify({ taskId: taskId || '' })
+        });
+        const submitResult = await submitResponse.json();
+
+        if (!submitResult.success) {
+            throw new Error(submitResult.message || '继续分析任务提交失败');
+        }
+
+        if (submitResult.data.state === 'loaded') {
+            return submitResult;
+        }
+
+        return pollJiraSimilarIssuesAnalysisTask(
+            submitResult.data.taskId,
+            candidateCount || (submitResult.data.analysis ? submitResult.data.analysis.candidateCount || 0 : 0)
+        );
+    }
+
+    async function pollJiraSimilarIssuesAnalysisTask(taskId, candidateCount) {
         // 轮询查询状态
         const maxAttempts = 120;
         const pollInterval = 5000;
         let attempts = 0;
-        const candidateCount = issueList.length;
 
         while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, pollInterval));
@@ -2281,14 +2506,24 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             // 更新进度显示
             if (elements.panels && elements.panels.jiraAnalysis && currentJiraAnalysisData) {
                 const progressMessage = '正在分析相似工单... (' + (attempts * 5) + '秒)';
+                const existingAnalysis = currentJiraAnalysisData.similarSceneAnalysis && currentJiraAnalysisData.similarSceneAnalysis.analysis
+                    ? currentJiraAnalysisData.similarSceneAnalysis.analysis
+                    : {};
                 currentJiraAnalysisData.similarSceneAnalysis = {
                     state: 'loading',
                     message: progressMessage,
-                    matches: [],
+                    taskId: taskId,
+                    matches: currentJiraAnalysisData.similarSceneAnalysis && Array.isArray(currentJiraAnalysisData.similarSceneAnalysis.matches)
+                        ? currentJiraAnalysisData.similarSceneAnalysis.matches
+                        : [],
                     analysis: {
                         source: 'loading',
                         candidateCount: candidateCount,
-                        matchedCount: 0,
+                        matchedCount: existingAnalysis.matchedCount || 0,
+                        analyzedCount: existingAnalysis.analyzedCount || 0,
+                        currentBatch: existingAnalysis.currentBatch || 0,
+                        totalBatches: existingAnalysis.totalBatches || Math.max(1, Math.ceil((candidateCount || 0) / 30)),
+                        hasMore: true,
                         conclusion: ''
                     }
                 };
@@ -2321,9 +2556,6 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         };
 
         button.disabled = true;
-        const originalText = button.textContent;
-        button.textContent = '分析中...';
-
         currentJiraAnalysisData.similarSceneAnalysis = buildJiraSimilarAnalysisLoadingState(rawIssueTable);
         elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
 
@@ -2331,15 +2563,73 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             const analysisResponse = await requestJiraSimilarIssuesAnalysis(currentIssue, rawIssueTable);
             currentJiraAnalysisData.similarSceneAnalysis = normalizeJiraSimilarIssuesAnalysisResponse(analysisResponse);
             elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
-            showToast('相似场景工单分析完成', 'success');
+            showToast(
+                currentJiraAnalysisData.similarSceneAnalysis.analysis && currentJiraAnalysisData.similarSceneAnalysis.analysis.hasMore
+                    ? '首批相似场景工单分析完成'
+                    : '相似场景工单分析完成',
+                'success'
+            );
         } catch (error) {
             currentJiraAnalysisData.similarSceneAnalysis = buildJiraSimilarAnalysisErrorState(error, rawIssueTable);
             elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
             showToast(error.message || '相似场景工单分析失败', 'error');
-        } finally {
-            button.disabled = false;
-            button.textContent = originalText;
         }
+    }
+
+    async function handleJiraSimilarAnalysisMoreAction(button) {
+        if (!button || button.disabled || !currentJiraAnalysisData || !currentJiraAnalysisData.raw) {
+            return;
+        }
+
+        const rawIssueTable = currentJiraAnalysisData.raw.issueTable;
+        const similarSceneAnalysis = currentJiraAnalysisData.similarSceneAnalysis || {};
+        const analysis = similarSceneAnalysis.analysis || {};
+        const taskId = similarSceneAnalysis.taskId || '';
+
+        if (!taskId) {
+            showToast('缺少分析任务标识，请重新开始分析', 'error');
+            return;
+        }
+
+        button.disabled = true;
+        currentJiraAnalysisData.similarSceneAnalysis = buildJiraSimilarAnalysisLoadingState(rawIssueTable, similarSceneAnalysis);
+        elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+
+        try {
+            const analysisResponse = await requestJiraSimilarIssuesAnalysisMore(taskId, analysis.candidateCount || 0);
+            currentJiraAnalysisData.similarSceneAnalysis = normalizeJiraSimilarIssuesAnalysisResponse(analysisResponse);
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+            showToast(
+                currentJiraAnalysisData.similarSceneAnalysis.analysis && currentJiraAnalysisData.similarSceneAnalysis.analysis.hasMore
+                    ? '已完成一批分析，可继续分析更多工单'
+                    : '全部相似场景工单分析完成',
+                'success'
+            );
+        } catch (error) {
+            currentJiraAnalysisData.similarSceneAnalysis = buildJiraSimilarAnalysisErrorState(error, rawIssueTable, similarSceneAnalysis);
+            elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
+            showToast(error.message || '继续分析相似场景工单失败', 'error');
+        }
+    }
+
+    function handleJiraRecentIssuesPageAction(button) {
+        if (!button || button.disabled || !currentJiraAnalysisData || !elements.panels.jiraAnalysis) {
+            return;
+        }
+
+        const recentIssues = Array.isArray(currentJiraAnalysisData.recentIssues) ? currentJiraAnalysisData.recentIssues : [];
+        if (!recentIssues.length) {
+            return;
+        }
+
+        const totalPages = Math.max(1, Math.ceil(recentIssues.length / JIRA_RECENT_ISSUES_PAGE_SIZE));
+        const targetPage = Math.min(
+            Math.max(Number(button.getAttribute('data-page')) || 1, 1),
+            totalPages
+        );
+
+        currentJiraAnalysisData.recentIssuesCurrentPage = targetPage;
+        elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(currentJiraAnalysisData);
     }
 
     async function handleJiraRecentIssueDetailAction(button) {
@@ -2354,6 +2644,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
 
         const issueId = String(button.getAttribute('data-issue-id') || '').trim();
         const issueKey = normalizeJiraIssueKey(button.getAttribute('data-issue-key') || '');
+        const detailSource = String(button.getAttribute('data-detail-source') || '').trim();
         const jiraCookie = loadJiraCookieFromStorage();
 
         if (!issueId || !issueKey) {
@@ -2387,6 +2678,8 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             currentJiraAnalysisData.selectedRecentIssueDetail = {
                 issueId: issueId,
                 issueKey: issueKey,
+                source: detailSource || 'recent',
+                sourceLabel: detailSource === 'similar' ? '相似场景工单详情' : '近期工单详情',
                 detail: detailEntries
             };
 
@@ -2574,42 +2867,67 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     }
 
     function buildJiraSimilarAnalysisPendingState(issueTable) {
+        const candidateCount = Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0;
         return {
             state: 'pending',
             message: '待开始分析',
             matches: [],
             analysis: {
                 source: 'pending',
-                candidateCount: Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0,
+                candidateCount: candidateCount,
                 matchedCount: 0,
+                analyzedCount: 0,
+                currentBatch: 0,
+                totalBatches: candidateCount ? Math.ceil(candidateCount / 30) : 0,
+                hasMore: candidateCount > 0,
                 conclusion: ''
             }
         };
     }
 
-    function buildJiraSimilarAnalysisLoadingState(issueTable) {
+    function buildJiraSimilarAnalysisLoadingState(issueTable, previousState) {
+        const candidateCount = Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0;
+        const previousMatches = previousState && Array.isArray(previousState.matches) ? previousState.matches : [];
+        const previousAnalysis = previousState && previousState.analysis && typeof previousState.analysis === 'object'
+            ? previousState.analysis
+            : {};
         return {
             state: 'loading',
             message: '正在分析相似场景工单，请稍候...',
-            matches: [],
+            taskId: previousState && previousState.taskId ? previousState.taskId : '',
+            matches: previousMatches,
             analysis: {
                 source: 'loading',
-                candidateCount: Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0,
-                matchedCount: 0,
+                candidateCount: previousAnalysis.candidateCount || candidateCount,
+                matchedCount: previousAnalysis.matchedCount || previousMatches.length,
+                analyzedCount: previousAnalysis.analyzedCount || 0,
+                currentBatch: previousAnalysis.currentBatch || 0,
+                totalBatches: previousAnalysis.totalBatches || (candidateCount ? Math.ceil(candidateCount / 30) : 0),
+                hasMore: previousAnalysis.hasMore !== undefined ? Boolean(previousAnalysis.hasMore) : candidateCount > 0,
                 conclusion: ''
             }
         };
     }
 
-    function buildJiraSimilarAnalysisErrorState(error, issueTable) {
+    function buildJiraSimilarAnalysisErrorState(error, issueTable, previousState) {
+        const candidateCount = Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0;
+        const previousMatches = previousState && Array.isArray(previousState.matches) ? previousState.matches : [];
+        const previousAnalysis = previousState && previousState.analysis && typeof previousState.analysis === 'object'
+            ? previousState.analysis
+            : {};
         return {
             state: 'error',
             message: error && error.message ? error.message : '相似场景分析失败',
-            matches: [],
+            taskId: previousState && previousState.taskId ? previousState.taskId : '',
+            matches: previousMatches,
             analysis: {
                 source: 'error',
-                candidateCount: Array.isArray(issueTable && issueTable.table) ? issueTable.table.length : 0,
-                matchedCount: 0,
+                candidateCount: previousAnalysis.candidateCount || candidateCount,
+                matchedCount: previousAnalysis.matchedCount || previousMatches.length,
+                analyzedCount: previousAnalysis.analyzedCount || 0,
+                currentBatch: previousAnalysis.currentBatch || 0,
+                totalBatches: previousAnalysis.totalBatches || (candidateCount ? Math.ceil(candidateCount / 30) : 0),
+                hasMore: previousAnalysis.hasMore !== undefined ? Boolean(previousAnalysis.hasMore) : candidateCount > 0,
                 conclusion: '相似场景分析未完成'
             }
         };
@@ -2629,6 +2947,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         return {
             state: payload.state || 'loaded',
             message: payload.message || '',
+            taskId: payload.taskId || (currentJiraAnalysisData && currentJiraAnalysisData.similarSceneAnalysis ? currentJiraAnalysisData.similarSceneAnalysis.taskId || '' : ''),
             matches: Array.isArray(payload.matches) ? payload.matches : [],
             analysis: payload.analysis && typeof payload.analysis === 'object'
                 ? Object.assign({ source: 'llm' }, payload.analysis)

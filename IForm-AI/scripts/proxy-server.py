@@ -21,6 +21,7 @@ DIRECTORY = Path(__file__).parent.parent / "assets"
 RUNTIME_CONFIG_PATH = DIRECTORY / "static" / "config" / "runtime-config.json"
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+SIMILAR_ISSUE_BATCH_SIZE = 30
 
 # 异步任务存储
 LLM_TASKS = {}  # task_id -> {'status': 'pending|running|completed|failed', 'result': None, 'error': None}
@@ -144,6 +145,10 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith('/api/jira/issue-table'):
             self.handle_jira_issue_table()
+            return
+
+        if self.path.startswith('/api/jira/similar-issues-analysis/continue'):
+            self.handle_jira_similar_issues_continue()
             return
 
         if self.path.startswith('/api/jira/similar-issues-analysis'):
@@ -354,9 +359,14 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             # 构建分析任务数据
             task_data = {
+                'task_id': task_id,
                 'issue_key': issue_key,
                 'current_summary': current_summary,
-                'candidates': normalized_candidates
+                'candidates': normalized_candidates,
+                'batch_size': SIMILAR_ISSUE_BATCH_SIZE,
+                'current_batch': 0,
+                'total_batches': max(1, (len(normalized_candidates) + SIMILAR_ISSUE_BATCH_SIZE - 1) // SIMILAR_ISSUE_BATCH_SIZE),
+                'aggregated_matches': []
             }
 
             # 立即返回任务ID
@@ -382,7 +392,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 'data': {
                     'state': 'processing',
                     'issueKey': issue_key,
-                    'taskId': task_id
+                    'taskId': task_id,
+                    'analysis': self.build_jira_similar_task_analysis(task_data)
                 }
             })
 
@@ -396,17 +407,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         LLM_TASKS[task_id]['status'] = 'running'
 
         try:
-            issue_key = task_data['issue_key']
-            current_summary = task_data['current_summary']
-            candidates = task_data['candidates']
-
-            analysis_result = self.invoke_similar_issue_analysis(issue_key, current_summary, candidates)
-            response_payload = self.build_similar_issue_analysis_response(
-                issue_key,
-                candidates,
-                analysis_result
-            )
-
+            response_payload = self.run_next_jira_similar_batch(task_data)
             LLM_TASKS[task_id]['status'] = 'completed'
             LLM_TASKS[task_id]['result'] = {
                 'success': True,
@@ -419,6 +420,71 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             LLM_TASKS[task_id]['status'] = 'failed'
             LLM_TASKS[task_id]['error'] = str(error)
 
+    def handle_jira_similar_issues_continue(self):
+        """继续分析下一批相似工单"""
+        try:
+            content_length = int(self.headers.get('Content-Length', '0') or '0')
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b''
+            body_text = self.decode_response_body(body_bytes, 'utf-8')
+            payload = json.loads(body_text or '{}')
+            task_id = str(payload.get('taskId', '') or '').strip()
+
+            if not task_id:
+                self.send_error_response(400, '缺少 taskId 参数')
+                return
+
+            task = LLM_TASKS.get(task_id)
+            if not task:
+                self.send_error_response(404, '任务不存在或已过期')
+                return
+
+            if task.get('task_type') != 'jira_similar':
+                self.send_error_response(400, '任务类型不支持继续分析')
+                return
+
+            if task.get('status') in ('pending', 'running'):
+                self.send_json_response(200, {
+                    'success': True,
+                    'data': self.build_jira_similar_status_payload(task_id, task, 'processing')
+                })
+                return
+
+            task_data = task.get('task_data') or {}
+            total_batches = int(task_data.get('total_batches') or 0)
+            current_batch = int(task_data.get('current_batch') or 0)
+            if current_batch >= total_batches:
+                task['status'] = 'completed'
+                task['result'] = {
+                    'success': True,
+                    'data': self.build_jira_similar_completion_payload(task_data)
+                }
+                self.send_json_response(200, {
+                    'success': True,
+                    'data': task['result']['data']
+                })
+                return
+
+            task['status'] = 'pending'
+            task['result'] = None
+            task['error'] = None
+
+            import threading
+            thread = threading.Thread(
+                target=self._run_jira_similar_task,
+                args=(task_id, task_data),
+                daemon=True
+            )
+            thread.start()
+
+            self.send_json_response(200, {
+                'success': True,
+                'data': self.build_jira_similar_status_payload(task_id, task, 'processing')
+            })
+        except json.JSONDecodeError:
+            self.send_error_response(400, '请求体不是合法的 JSON')
+        except Exception as error:
+            self.send_error_response(500, f'继续分析相似场景工单失败: {error}')
+
     def handle_jira_similar_analysis_status(self, task_id):
         """查询相似工单分析任务状态"""
         task = LLM_TASKS.get(task_id)
@@ -430,27 +496,129 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         if task['status'] == 'completed':
             self.send_json_response(200, {
                 'success': True,
-                'data': {
-                    'state': 'loaded',
-                    'issueKey': task['task_data']['issue_key'],
-                    'taskId': task_id,
-                    'status': 'completed',
-                    'matches': task['result']['data'].get('matches', []),
-                    'analysis': task['result']['data'].get('analysis', {})
-                }
+                'data': task['result']['data']
             })
         elif task['status'] == 'failed':
             self.send_error_response(500, task.get('error', '分析失败'))
         else:
             self.send_json_response(200, {
                 'success': True,
-                'data': {
-                    'state': 'processing',
-                    'issueKey': task['task_data']['issue_key'],
-                    'taskId': task_id,
-                    'status': task['status']
-                }
+                'data': self.build_jira_similar_status_payload(task_id, task, 'processing')
             })
+
+    def run_next_jira_similar_batch(self, task_data):
+        issue_key = task_data['issue_key']
+        current_summary = task_data['current_summary']
+        candidates = task_data['candidates']
+        batch_size = max(1, int(task_data.get('batch_size') or SIMILAR_ISSUE_BATCH_SIZE))
+        current_batch = int(task_data.get('current_batch') or 0)
+        start_index = current_batch * batch_size
+        end_index = start_index + batch_size
+        batch_candidates = candidates[start_index:end_index]
+
+        if not batch_candidates:
+            return self.build_jira_similar_completion_payload(task_data)
+
+        analysis_result = self.invoke_similar_issue_analysis(issue_key, current_summary, batch_candidates)
+        batch_response = self.build_similar_issue_analysis_response(
+            issue_key,
+            batch_candidates,
+            analysis_result
+        )
+
+        aggregated_matches = self.merge_similar_issue_matches(
+            task_data.get('aggregated_matches', []),
+            batch_response.get('matches', [])
+        )
+        task_data['aggregated_matches'] = aggregated_matches
+        task_data['current_batch'] = current_batch + 1
+
+        return self.build_jira_similar_completion_payload(task_data)
+
+    def build_jira_similar_status_payload(self, task_id, task, state):
+        task_data = task.get('task_data') or {}
+        payload = self.build_jira_similar_completion_payload(task_data)
+        payload['state'] = state
+        payload['taskId'] = task_id
+        payload['status'] = task.get('status', state)
+        return payload
+
+    def build_jira_similar_completion_payload(self, task_data):
+        analysis = self.build_jira_similar_task_analysis(task_data)
+        aggregated_matches = task_data.get('aggregated_matches', []) if isinstance(task_data.get('aggregated_matches', []), list) else []
+        current_batch = int(task_data.get('current_batch') or 0)
+        total_batches = int(task_data.get('total_batches') or 0)
+        issue_key = task_data.get('issue_key', '')
+        task_id = task_data.get('task_id', '')
+        is_complete = current_batch >= total_batches
+        payload = {
+            'state': 'loaded',
+            'issueKey': issue_key,
+            'taskId': task_id,
+            'matches': aggregated_matches,
+            'analysis': analysis
+        }
+        if is_complete:
+            payload['status'] = 'completed'
+        return payload
+
+    def build_jira_similar_task_analysis(self, task_data):
+        candidates = task_data.get('candidates', []) if isinstance(task_data.get('candidates', []), list) else []
+        aggregated_matches = task_data.get('aggregated_matches', []) if isinstance(task_data.get('aggregated_matches', []), list) else []
+        current_batch = int(task_data.get('current_batch') or 0)
+        total_batches = int(task_data.get('total_batches') or 0)
+        batch_size = max(1, int(task_data.get('batch_size') or SIMILAR_ISSUE_BATCH_SIZE))
+        analyzed_count = min(current_batch * batch_size, len(candidates))
+        has_more = current_batch < total_batches
+        conclusion = (
+            f'已完成第 {current_batch} / {total_batches} 批分析，累计命中 {len(aggregated_matches)} 条相似工单'
+            if has_more
+            else (f'找到 {len(aggregated_matches)} 条相似场景工单' if aggregated_matches else '未匹配到相似场景工单')
+        )
+
+        return {
+            'source': 'llm',
+            'candidateCount': len(candidates),
+            'matchedCount': len(aggregated_matches),
+            'analyzedCount': analyzed_count,
+            'batchSize': batch_size,
+            'currentBatch': current_batch,
+            'totalBatches': total_batches,
+            'hasMore': has_more,
+            'conclusion': conclusion
+        }
+
+    def merge_similar_issue_matches(self, existing_matches, new_matches):
+        merged_map = {}
+        for item in existing_matches or []:
+            if not isinstance(item, dict):
+                continue
+            issue_key = str(item.get('issueKey', '') or '').strip()
+            if issue_key:
+                merged_map[issue_key] = item
+
+        for item in new_matches or []:
+            if not isinstance(item, dict):
+                continue
+            issue_key = str(item.get('issueKey', '') or '').strip()
+            if not issue_key:
+                continue
+
+            existing = merged_map.get(issue_key)
+            new_score = self.safe_float(item.get('similarityScore', 0))
+            existing_score = self.safe_float(existing.get('similarityScore', 0)) if existing else -1
+            if not existing or new_score >= existing_score:
+                merged_map[issue_key] = item
+
+        merged_matches = list(merged_map.values())
+        merged_matches.sort(key=lambda item: self.safe_float(item.get('similarityScore', 0)), reverse=True)
+        return merged_matches
+
+    def safe_float(self, value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def handle_llm_analyze(self):
         """异步调用 YonClaw 大模型进行数据分析"""
@@ -1055,7 +1223,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         normalized_issue_key = str(issue_key or '').strip().lower()
         normalized_candidates = []
 
-        for item in candidates[:30]:
+        for item in candidates:
             if not isinstance(item, dict):
                 continue
 
@@ -1206,7 +1374,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return {
             'source': 'fallback',
             'strategy': 'keyword_overlap',
-            'matches': matches[:10],
+            'matches': matches,
             'conclusion': '当前结果来自本地关键词匹配，不代表智能体语义解析结论，请结合工单详情人工确认'
         }
 
