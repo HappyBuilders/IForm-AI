@@ -43,6 +43,8 @@
     let currentParams = null;
     let currentJiraAnalysisData = null;
     let currentLoadSequence = 0;
+    let currentAnalysisContext = null;
+    let lastAutoProblemDescription = '';
     let currentBusinessData = {}; // 存储各页签的业务数据用于AI分析
 
     const elements = {
@@ -78,6 +80,8 @@
         detailLinkPasswordInput: document.getElementById('detailLinkPasswordInput'),
         detailYhtAccessTokenInput: document.getElementById('detailYhtAccessTokenInput'),
         aiAnalyzeBtn: document.getElementById('aiAnalyzeBtn'),
+        aiProblemDescriptionInput: document.getElementById('aiProblemDescriptionInput'),
+        aiProblemDescriptionHint: document.getElementById('aiProblemDescriptionHint'),
         jiraIssueKeyInput: document.getElementById('jiraIssueKeyInput'),
         jiraKeywordInput: document.getElementById('jiraKeywordInput'),
         jiraCookieInput: document.getElementById('jiraCookieInput'),
@@ -86,6 +90,46 @@
     };
 
     // ==================== AI 智能分析功能 ====================
+    
+    // 分析类型定义
+    const AI_ANALYSIS_TYPES = {
+        diagnosis: {
+                    id: 'diagnosis',
+                    name: '问题场景分析',
+                    prompt: '你是一个专业的表单设计专家。具有充分理解表单业务的能力，并且能结合“表单配置信息”和用户的问题描述，从参考文件中汇总分析到具体场景相关内容进行分析。找出相似的场景功能使用和问题解决方案：\n1. 首先确认匹配的描述场景\n2. 分析场景功能的使用方法和操作建议\n3. 提供指定性建议\n请用简洁易懂的中文回答。'
+                },
+        overview: {
+            id: 'overview',
+            name: '数据分析',
+            prompt: '你是一个专业的业务数据分析助手。请结合“表单配置信息”（这个是动态表单的设计数据）和“单据数据信息” 这个是表单的最终单据内容，来匹配对应表单控件的内容。并且着重结合“业务日志”数据来分析变化的控件内容，从日志中提炼出通一个表单控件对应的数据内容变更情况。给出：\n1. 数据概要总结\n2. 关键信息提取\n3. 变更记录追溯\n请用简洁易懂的中文回答。'
+        },
+        jira: {
+            id: 'jira',
+            name: 'Jira问题分析',
+            prompt: '你是一个专业的Jira问题分析专家。请结合以下业务数据和Jira工单信息。并且进行参考文件分析汇总：\n1. 分析业务问题与Jira工单的关联\n2. 根据参考文献相似场景描述给出汇总建议\n3. 提供正确的场景问题功能方案设计和使用思路\n4. 给出相关的结论\n请用简洁易懂的中文回答。'
+        }
+    };
+
+    function getAnalysisTypeHtml() {
+        const options = Object.values(AI_ANALYSIS_TYPES).map(type => 
+            `<option value="${type.id}">${type.name}</option>`
+        ).join('');
+        return `<div class="ai-analysis-config">
+            <label class="ai-analysis-label">分析类型（可选）</label>
+            <select id="aiAnalysisType" class="form-control ai-analysis-select">
+                ${options}
+            </select>
+        </div>`;
+    }
+
+    function getProblemDescriptionHtml() {
+        return `<div class="ai-analysis-config">
+            <label class="ai-analysis-label">待分析问题内容</label>
+            <textarea id="aiProblemDescription" class="form-control ai-analysis-textarea" 
+                placeholder="请详细描述您遇到的问题、需要分析的内容或想了解的信息..."></textarea>
+        }</div>`;
+    }
+
     function handleAIAnalyzeClick() {
         if (!currentParams) {
             showToast('请先加载业务数据', 'error');
@@ -100,13 +144,30 @@
             return;
         }
 
+        // 获取选中的分析类型
+        const analysisTypeSelect = document.getElementById('aiAnalysisType');
+        const analysisType = analysisTypeSelect ? analysisTypeSelect.value : 'overview';
+        const selectedTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.overview;
+        
+        // 获取问题描述
+        const problemDescInput = document.getElementById('aiProblemDescription');
+        const problemDescription = problemDescInput ? problemDescInput.value.trim() : '';
+
         // 收集各页签数据
         const analysisData = {
             params: currentParams,
             formConfig: extractPanelData('panel-formConfig'),
             document: extractPanelData('panel-document'),
             approval: extractPanelData('panel-approval'),
-            businessLog: extractPanelData('panel-businessLog')
+            businessLog: extractPanelData('panel-businessLog'),
+            // 如果有Jira数据，也加入分析
+            jira: currentJiraAnalysisData ? {
+                currentIssue: currentJiraAnalysisData.currentIssueBase,
+                similarScene: currentJiraAnalysisData.similarSceneAnalysis,
+                matches: currentJiraAnalysisData.similarSceneAnalysis?.matches || []
+            } : null,
+            // 用户输入的问题描述
+            problemDescription: problemDescription
         };
 
         // 显示加载状态
@@ -118,10 +179,11 @@
             elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在调用AI分析，请稍候...</div>';
         }
 
-        // 调用后端 API
+        // 使用选中的分析模板
         analyzeWithLLM({
-            prompt: '你是一个专业的业务数据分析助手。请分析以下业务系统数据，给出：\n1. 数据概要总结\n2. 关键信息提取\n3. 可能的问题或风险提示\n4. 改进建议\n请用简洁易懂的中文回答。',
-            data: analysisData
+            prompt: selectedTemplate.prompt,
+            data: analysisData,
+            analysisType: analysisType
         }).then(result => {
             if (result.code === 200 && result.data) {
                 let content = result.data.content || result.data.message || JSON.stringify(result.data, null, 2);
@@ -241,6 +303,335 @@
         return div.innerHTML;
     }
 
+    function handleAIAnalyzeClick() {
+        if (!currentParams) {
+            showToast('请先加载业务数据', 'error');
+            return;
+        }
+
+        if (!hasCoreBusinessDataReady()) {
+            if (elements.panels.aiAnalysis) {
+                elements.panels.aiAnalysis.innerHTML = renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
+            }
+            showToast('请先补充表单参数并加载核心页签后再使用AI智能分析', 'error');
+            return;
+        }
+
+        const problemDescription = getAIProblemDescriptionValue();
+        if (!problemDescription) {
+            showToast('请输入待分析的问题描述', 'error');
+            if (elements.aiProblemDescriptionInput) {
+                elements.aiProblemDescriptionInput.focus();
+            }
+            return;
+        }
+
+        const analysisData = buildAIAnalysisRequestPayload(problemDescription);
+
+        if (elements.aiAnalyzeBtn) {
+            elements.aiAnalyzeBtn.disabled = true;
+            elements.aiAnalyzeBtn.textContent = '分析中...';
+        }
+        if (elements.panels.aiAnalysis) {
+            elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在调用AI分析，请稍候...</div>';
+        }
+
+        analyzeWithLLM(analysisData, '/api/llm/analyze-jira-problem').then(result => {
+            if (result.code === 200 && result.data) {
+                const content = result.data.content || result.data.message || JSON.stringify(result.data, null, 2);
+                if (elements.panels.aiAnalysis) {
+                    elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-content">' + formatAIResponse(content) + '</div>';
+                }
+                showToast('AI分析完成', 'success');
+            } else {
+                throw new Error(result.message || '分析失败');
+            }
+        }).catch(error => {
+            console.error('AI分析失败:', error);
+            if (elements.panels.aiAnalysis) {
+                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-error">AI分析失败: ' + escapeHtml(error.message) + '</div>';
+            }
+            showToast('AI分析失败: ' + error.message, 'error');
+        }).finally(() => {
+            if (elements.aiAnalyzeBtn) {
+                syncAIAnalyzeButtonState(hasCoreBusinessDataReady());
+                elements.aiAnalyzeBtn.textContent = '开始分析';
+            }
+        });
+    }
+
+    async function analyzeWithLLM(payload, endpoint) {
+        const submitResponse = await fetch(endpoint || '/api/llm/analyze', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        const submitResult = await submitResponse.json();
+
+        if (submitResult.code !== 202) {
+            throw new Error(submitResult.message || '任务提交失败');
+        }
+
+        const taskId = submitResult.data.taskId;
+        const maxAttempts = 120;
+        const pollInterval = 5000;
+        let attempts = 0;
+
+        while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+            const statusResponse = await fetch(`/api/llm/analyze/status/${taskId}`);
+            const statusResult = await statusResponse.json();
+
+            if (statusResult.data.status === 'completed') {
+                return {
+                    code: 200,
+                    message: 'success',
+                    data: statusResult.data.result
+                };
+            }
+
+            if (statusResult.data.status === 'failed') {
+                throw new Error(statusResult.data.error || '分析失败');
+            }
+
+            attempts++;
+
+            if (elements.panels.aiAnalysis) {
+                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在分析中... (' + Math.round(attempts * 5) + '秒)</div>';
+            }
+        }
+
+        throw new Error('分析超时，请稍后重试');
+    }
+
+    function getAIProblemDescriptionValue() {
+        return normalizeWhitespace(elements.aiProblemDescriptionInput ? elements.aiProblemDescriptionInput.value : '');
+    }
+
+    function buildAIAnalysisRequestPayload(problemDescription) {
+        const nextContext = buildAIAnalysisContextSnapshot();
+
+        return {
+            mode: 'jira_problem_analysis',
+            problemDescription: problemDescription,
+            params: nextContext.params,
+            tabStatus: nextContext.tabStatus,
+            tabs: nextContext.tabs,
+            jiraContext: nextContext.jiraContext,
+            generatedAt: new Date().toISOString()
+        };
+    }
+
+    function buildAIAnalysisContextSnapshot() {
+        const baseContext = currentAnalysisContext || {};
+        const jiraContext = buildAIJiraContext();
+        const nextContext = {
+            params: sanitizeParamsForAI(currentParams || {}),
+            tabStatus: Object.assign({}, baseContext.tabStatus || {}),
+            tabs: Object.assign({}, baseContext.tabs || {}),
+            jiraContext: summarizeJiraContextForAI(jiraContext)
+        };
+
+        if (jiraContext) {
+            nextContext.tabStatus.jiraAnalysis = jiraContext.state || 'loaded';
+            nextContext.tabs.jiraAnalysis = {
+                normalized: summarizeJiraTabForAI(jiraContext.normalized || {}),
+                notes: [
+                    'jiraAnalysis 包含当前 Jira 工单、近期工单列表、相似场景分析、以及当前工单详情字段。',
+                    '若 currentIssueDetail 中存在“概要”字段，应优先将其视为问题摘要。'
+                ]
+            };
+        }
+
+        return nextContext;
+    }
+
+    function buildAIJiraContext() {
+        if (!currentJiraAnalysisData) {
+            return null;
+        }
+
+        const detail = currentJiraAnalysisData.currentIssueDetail || {};
+        const issueBase = currentJiraAnalysisData.currentIssueBase || {};
+        const summary = firstNonEmptyValue([
+            detail.概要,
+            detail.summary,
+            issueBase.概要,
+            issueBase.标题,
+            currentJiraAnalysisData.issueKey
+        ]);
+
+        return {
+            state: currentJiraAnalysisData.state || 'loaded',
+            issueKey: currentJiraAnalysisData.issueKey || '',
+            summary: summary || '',
+            normalized: currentJiraAnalysisData,
+            raw: currentJiraAnalysisData.raw || {}
+        };
+    }
+
+    function updateAnalysisContext(params, runtimeContext, options) {
+        const shared = runtimeContext && runtimeContext.shared ? runtimeContext.shared : {};
+        const baseContext = currentAnalysisContext || {};
+        const nextContext = {
+            params: sanitizeParamsForAI(params || currentParams || {}),
+            tabStatus: {
+                formConfig: shared.formConfigParsed ? 'loaded' : (baseContext.tabStatus && baseContext.tabStatus.formConfig) || ((options && options.coreReady === false) ? 'blocked' : 'pending'),
+                document: shared.documentParsed ? 'loaded' : (baseContext.tabStatus && baseContext.tabStatus.document) || ((options && options.coreReady === false) ? 'blocked' : 'pending'),
+                approval: shared.approvalRaw ? 'loaded' : (baseContext.tabStatus && baseContext.tabStatus.approval) || ((options && options.coreReady === false) ? 'blocked' : 'pending'),
+                businessLog: shared.businessLogData ? 'loaded' : (baseContext.tabStatus && baseContext.tabStatus.businessLog) || ((options && options.coreReady === false) ? 'blocked' : 'pending'),
+                jiraAnalysis: currentJiraAnalysisData ? (currentJiraAnalysisData.state || 'loaded') : 'pending'
+            },
+            tabs: {
+                formConfig: {
+                    normalized: summarizeFormConfigForAI(shared.formConfigRenderData || (baseContext.tabs && baseContext.tabs.formConfig ? baseContext.tabs.formConfig.normalized : null)),
+                    notes: ['formConfig 描述表单模板结构、字段配置、布局与子表定义。']
+                },
+                document: {
+                    normalized: summarizeDocumentForAI(shared.documentParsed || (baseContext.tabs && baseContext.tabs.document ? baseContext.tabs.document.normalized : null)),
+                    notes: ['document 描述当前单据实例数据、主表/子表字段值与流程相关标识。']
+                },
+                approval: {
+                    normalized: summarizeApprovalForAI(shared.approvalRenderData || (baseContext.tabs && baseContext.tabs.approval ? baseContext.tabs.approval.normalized : null)),
+                    notes: ['approval 描述流程审批节点、处理人、处理意见、流转状态与时序信息。']
+                },
+                businessLog: {
+                    normalized: summarizeBusinessLogForAI(shared.businessLogData || (baseContext.tabs && baseContext.tabs.businessLog ? baseContext.tabs.businessLog.normalized : null)),
+                    notes: ['businessLog 描述业务日志、调用链、模块、耗时与异常线索。']
+                }
+            }
+        };
+
+        if (currentJiraAnalysisData) {
+            const jiraContext = buildAIJiraContext();
+            nextContext.jiraContext = summarizeJiraContextForAI(jiraContext);
+            nextContext.tabs.jiraAnalysis = {
+                raw: sanitizeDataForAI(jiraContext ? jiraContext.raw : null),
+                normalized: sanitizeDataForAI(jiraContext ? jiraContext.normalized : null),
+                notes: ['jiraAnalysis 描述当前 Jira 工单、详情字段、近期工单与相似场景分析结果。']
+            };
+        }
+
+        currentAnalysisContext = nextContext;
+    }
+
+    function syncAIProblemDescriptionFromJira(force) {
+        if (!elements.aiProblemDescriptionInput) {
+            return;
+        }
+
+        const nextValue = resolveAIProblemDescriptionFromJira();
+        const currentValue = elements.aiProblemDescriptionInput.value.trim();
+        const canOverwrite = force || !currentValue || currentValue === lastAutoProblemDescription;
+
+        if (nextValue && canOverwrite) {
+            elements.aiProblemDescriptionInput.value = nextValue;
+            lastAutoProblemDescription = nextValue;
+        }
+
+        if (elements.aiProblemDescriptionHint) {
+            elements.aiProblemDescriptionHint.textContent = nextValue
+                ? '已自动带入 Jira 当前工单的“概要”或标题，你可以继续修改后再发起分析。'
+                : '优先分析你当前输入的问题描述；若已加载 Jira 当前工单详情，系统会自动回填其“概要”或标题作为默认值。';
+        }
+    }
+
+    function resolveAIProblemDescriptionFromJira() {
+        const jiraContext = buildAIJiraContext();
+        return jiraContext && jiraContext.summary ? jiraContext.summary : '';
+    }
+
+    function sanitizeParamsForAI(params) {
+        return sanitizeDataForAI({
+            environment: params.environment || '',
+            authType: params.authType || '',
+            formParamMode: params.formParamMode || '',
+            ytenant_id: params.ytenant_id || '',
+            pkBo: params.pkBo || '',
+            pkBoins: params.pkBoins || '',
+            jiraIssueKey: params.jiraIssueKey || '',
+            jiraKeyword: params.jiraKeyword || '',
+            entryMode: params.entryMode || '',
+            activeTab: params.activeTab || ''
+        });
+    }
+
+    function sanitizeDataForAI(value, depth) {
+        const nextDepth = typeof depth === 'number' ? depth : 0;
+        if (nextDepth > 6) {
+            return '[Depth Limited]';
+        }
+
+        if (Array.isArray(value)) {
+            return value.slice(0, 50).map((item) => sanitizeDataForAI(item, nextDepth + 1));
+        }
+
+        if (!value || typeof value !== 'object') {
+            if (typeof value === 'string' && value.length > 4000) {
+                return value.slice(0, 4000) + ' ...[truncated]';
+            }
+            return value;
+        }
+
+        const result = {};
+        Object.keys(value).forEach((key) => {
+            if (shouldSkipAIKey(key)) {
+                return;
+            }
+
+            result[key] = sanitizeDataForAI(value[key], nextDepth + 1);
+        });
+        return result;
+    }
+
+    // 缺失的 summarize 函数
+    function summarizeFormConfigForAI(data) {
+        return sanitizeDataForAI(data);
+    }
+
+    function summarizeDocumentForAI(data) {
+        return sanitizeDataForAI(data);
+    }
+
+    function summarizeApprovalForAI(data) {
+        return sanitizeDataForAI(data);
+    }
+
+    function summarizeBusinessLogForAI(data) {
+        return sanitizeDataForAI(data);
+    }
+
+    function summarizeJiraContextForAI(data) {
+        return sanitizeDataForAI(data);
+    }
+
+    function summarizeJiraTabForAI(data) {
+        return sanitizeDataForAI(data);
+    }
+
+    function shouldSkipAIKey(key) {
+        const normalizedKey = String(key || '').toLowerCase();
+        return normalizedKey === 'cookie' ||
+            normalizedKey.indexOf('secret') >= 0 ||
+            normalizedKey.indexOf('password') >= 0 ||
+            normalizedKey.indexOf('token') >= 0 ||
+            normalizedKey.indexOf('authorization') >= 0;
+    }
+
+    function firstNonEmptyValue(values) {
+        for (let index = 0; index < values.length; index += 1) {
+            const value = normalizeWhitespace(values[index]);
+            if (value) {
+                return value;
+            }
+        }
+
+        return '';
+    }
+
     // ==================== 原有函数 ====================
     function init() {
         hydrateEnvironmentOptions();
@@ -250,6 +641,7 @@
         hydrateJiraControls(currentParams);
         hydrateCoreParamControls(currentParams);
         syncCoreParamBlockVisibility(currentParams);
+        syncAIProblemDescriptionFromJira(false);
 
         if (!currentParams) {
             renderMissingParams();
@@ -302,6 +694,14 @@
 
         if (elements.aiAnalyzeBtn) {
             elements.aiAnalyzeBtn.addEventListener('click', handleAIAnalyzeClick);
+        }
+
+        if (elements.aiProblemDescriptionInput) {
+            elements.aiProblemDescriptionInput.addEventListener('input', () => {
+                if (elements.aiProblemDescriptionHint && elements.aiProblemDescriptionInput.value.trim() !== lastAutoProblemDescription) {
+                    elements.aiProblemDescriptionHint.textContent = '将基于你当前输入的问题描述进行分析。';
+                }
+            });
         }
     }
 
@@ -373,13 +773,13 @@
             return;
         }
 
-        setStatus('加载中', 'is-loading');
-        fillLoadingState();
-
         const loadSequence = ++currentLoadSequence;
         const runtimeContext = { shared: {} };
         const canLoadCoreTabs = hasCoreTabAccess(params);
         let successCount = 0;
+
+        setStatus('加载中', 'is-loading');
+        fillLoadingState(canLoadCoreTabs);
 
         if (canLoadCoreTabs) {
             const primaryResults = await Promise.allSettled(
@@ -393,6 +793,16 @@
             primaryResults.forEach((result, index) => {
                 const tabKey = PRIMARY_TAB_KEYS[index];
                 if (result.status === 'fulfilled') {
+                    if (tabKey === 'formConfig') {
+                        runtimeContext.shared.formConfigRenderData = result.value;
+                    } else if (tabKey === 'document') {
+                        runtimeContext.shared.documentRenderData = result.value;
+                    } else if (tabKey === 'approval') {
+                        runtimeContext.shared.approvalRenderData = result.value;
+                    } else if (tabKey === 'businessLog') {
+                        runtimeContext.shared.businessLogData = result.value;
+                        runtimeContext.shared.businessLogRaw = result.value;
+                    }
                     elements.panels[tabKey].innerHTML = renderTabValue(tabKey, result.value);
                     successCount += 1;
                 } else {
@@ -402,11 +812,15 @@
 
             syncAIAnalyzeButtonState(successCount === PRIMARY_TAB_KEYS.length);
         } else {
+            runtimeContext.shared.businessLogData = buildMockTabData('businessLog', params);
+            runtimeContext.shared.businessLogRaw = runtimeContext.shared.businessLogData;
             renderCoreTabsDependencyState();
-            elements.panels.businessLog.innerHTML = renderTabValue('businessLog', buildMockTabData('businessLog', params));
+            elements.panels.businessLog.innerHTML = renderTabValue('businessLog', runtimeContext.shared.businessLogData);
             elements.panels.aiAnalysis.innerHTML = renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
             syncAIAnalyzeButtonState(false);
         }
+
+        updateAnalysisContext(params, runtimeContext, { coreReady: canLoadCoreTabs });
 
         if (loadSequence !== currentLoadSequence) {
             return;
@@ -440,6 +854,9 @@
             }
 
             elements.panels[JIRA_TAB_KEY].innerHTML = renderTabValue(JIRA_TAB_KEY, jiraValue);
+            currentJiraAnalysisData = jiraValue;
+            updateAnalysisContext(params, runtimeContext, { coreReady: canLoadCoreTabs });
+            syncAIProblemDescriptionFromJira(false);
             const isPending = jiraValue && jiraValue.state === 'pending';
 
             if ((canLoadCoreTabs ? primarySuccessCount === PRIMARY_TAB_KEYS.length : true) && !isPending) {
@@ -1117,6 +1534,8 @@
             const data = await requestJiraAnalysisData(currentParams, { shared: {} }, { forceReload: true });
             currentJiraAnalysisData = data;
             elements.panels.jiraAnalysis.innerHTML = renderJiraAnalysisValue(data);
+            updateAnalysisContext(currentParams, { shared: {} }, { coreReady: hasCoreTabAccess(currentParams) });
+            syncAIProblemDescriptionFromJira(false);
             showToast('Jira 数据加载完成', 'success');
         } catch (error) {
             currentJiraAnalysisData = null;
@@ -2638,10 +3057,26 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         return String(value).replace(/["\\]/g, '\\$&');
     }
 
-    function fillLoadingState() {
+    function fillLoadingState(canLoadCoreTabs) {
         TAB_KEYS.forEach((tabKey) => {
+            if (tabKey === AI_ANALYSIS_TAB_KEY) {
+                elements.panels[tabKey].innerHTML = canLoadCoreTabs
+                    ? renderAIAnalysisIdleState()
+                    : renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
+                return;
+            }
+
             elements.panels[tabKey].innerHTML = '<div class="empty-state">正在加载，请稍候...</div>';
         });
+    }
+
+    function renderAIAnalysisIdleState() {
+        return `
+            <div class="ai-analysis-placeholder">
+                <p>描述问题后选择分析类型，点击"开始分析"按钮使用AI分析业务数据</p>
+                ${getProblemDescriptionHtml()}
+                ${getAnalysisTypeHtml()}
+            </div>`;
     }
 
     function renderErrorBlock(error) {
@@ -3434,6 +3869,8 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     }
 
     function renderMissingParams() {
+        currentAnalysisContext = null;
+        currentJiraAnalysisData = null;
         renderSummary({
             environment: '-',
             authType: 'sso',
@@ -3462,7 +3899,13 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     }
 
     function hasCoreBusinessDataReady() {
-        return Boolean(currentParams && hasCoreTabAccess(currentParams) && elements.aiAnalyzeBtn && !elements.aiAnalyzeBtn.disabled);
+        return Boolean(
+            currentParams &&
+            hasCoreTabAccess(currentParams) &&
+            currentAnalysisContext &&
+            currentAnalysisContext.tabStatus &&
+            PRIMARY_TAB_KEYS.every((tabKey) => currentAnalysisContext.tabStatus[tabKey] === 'loaded')
+        );
     }
 
     function syncAIAnalyzeButtonState(enabled) {

@@ -67,7 +67,7 @@ IForm-AI/
 python scripts/proxy-server.py
 ```
 
-然后访问：`http://localhost:18080/templates/index.html`
+然后访问：`http://localhost:8080/templates/index.html`
 
 **代理功能说明**：
 - 所有API请求自动通过代理转发
@@ -170,7 +170,7 @@ python scripts/proxy-server.py
 
 ### 2. 访问首页
 
-浏览器打开：`http://localhost:18080/templates/index.html`
+浏览器打开：`http://localhost:8080/templates/index.html`
 
 ### 3. 输入参数
 
@@ -182,6 +182,53 @@ python scripts/proxy-server.py
 ### 4. 查看详情
 
 点击提交后进入详情页，5个页签自动加载数据。
+
+## 直接对话问答能力（无需启动服务）
+
+除了启动H5系统外，本技能还支持直接对话问答！你可以直接在YonClaw对话中问我表单设计相关问题。
+
+### 能力说明
+
+- **无需启动H5服务** - 直接对话即可使用
+- **自动读取参考文档** - 自动扫描 `references` 文件夹中的所有文档
+- **专业表单设计专家** - 理解表单业务，能从文档中找到相似场景
+- **问题诊断与解决方案** - 结合问题描述给出具体解决方案
+
+### 使用方式
+
+直接在对话中问我，例如：
+
+> "如何设置累计发票已冲销金额的校验规则？等于0时禁止下一步"
+> "表单设计中，如何实现提交前校验？"
+> "对公付款申请单中，如何配置字段的必填校验？"
+
+### references 文件夹
+
+参考文档放置位置：
+```
+skill根目录/references/  （任意层级、任意子目录）
+```
+
+支持的文件：
+- 所有 `.md` 格式的文档
+- 任意层级的子目录都会自动扫描
+
+示例：
+```
+references/
+├── api/
+│   └── xxx.md
+├── models/
+│   └── yyy.md
+├── workflow/
+│   └── sub/
+│       └── zzz.md
+└── readme.md
+```
+
+我会自动读取这些文档，结合你的问题给出专业的回答。
+
+---
 
 ## 自定义扩展
 

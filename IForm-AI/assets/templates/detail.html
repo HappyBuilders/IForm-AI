@@ -246,6 +246,24 @@
                             <span class="panel-note">基于大模型分析业务数据并生成洞察报告</span>
                             <button type="button" class="btn btn-primary btn-inline" id="aiAnalyzeBtn">开始分析</button>
                         </div>
+                        <section class="auth-block ai-analysis-input-block">
+                            <div class="auth-block-head">
+                                <div class="auth-block-title">问题描述</div>
+                            </div>
+                            <div class="form-grid detail-param-grid detail-param-grid-single">
+                                <div class="form-group form-group-full">
+                                    <label for="aiProblemDescriptionInput" class="form-label">
+                                        <span class="label-text">待分析问题内容</span>
+                                        <span class="required">*</span>
+                                    </label>
+                                    <textarea
+                                        id="aiProblemDescriptionInput"
+                                        class="form-input form-textarea ai-problem-textarea"
+                                        placeholder="请输入问题描述；如果 Jira 当前工单详情已加载，会自动带入工单“概要”或标题内容，你也可以继续修改。"></textarea>
+                                    <div class="field-note" id="aiProblemDescriptionHint">优先分析你当前输入的问题描述；若已加载 Jira 当前工单详情，系统会自动回填其“概要”或标题作为默认值。</div>
+                                </div>
+                            </div>
+                        </section>
                         <div class="ai-analysis-result" id="panel-aiAnalysis">
                             <div class="ai-analysis-placeholder">点击"开始分析"按钮，使用AI分析当前业务数据</div>
                         </div>
