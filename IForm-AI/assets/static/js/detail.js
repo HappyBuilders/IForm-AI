@@ -110,26 +110,6 @@
         }
     };
 
-    function getAnalysisTypeHtml() {
-        const options = Object.values(AI_ANALYSIS_TYPES).map(type => 
-            `<option value="${type.id}">${type.name}</option>`
-        ).join('');
-        return `<div class="ai-analysis-config">
-            <label class="ai-analysis-label">分析类型（可选）</label>
-            <select id="aiAnalysisType" class="form-control ai-analysis-select">
-                ${options}
-            </select>
-        </div>`;
-    }
-
-    function getProblemDescriptionHtml() {
-        return `<div class="ai-analysis-config">
-            <label class="ai-analysis-label">待分析问题内容</label>
-            <textarea id="aiProblemDescription" class="form-control ai-analysis-textarea" 
-                placeholder="请详细描述您遇到的问题、需要分析的内容或想了解的信息..."></textarea>
-        }</div>`;
-    }
-
     function handleAIAnalyzeClick() {
         if (!currentParams) {
             showToast('请先加载业务数据', 'error');
@@ -150,7 +130,7 @@
         const selectedTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.overview;
         
         // 获取问题描述
-        const problemDescInput = document.getElementById('aiProblemDescription');
+        const problemDescInput = elements.aiProblemDescriptionInput;
         const problemDescription = problemDescInput ? problemDescInput.value.trim() : '';
 
         // 收集各页签数据
@@ -411,11 +391,21 @@
         return normalizeWhitespace(elements.aiProblemDescriptionInput ? elements.aiProblemDescriptionInput.value : '');
     }
 
+    function getAIAnalysisTypeValue() {
+        const analysisTypeSelect = document.getElementById('aiAnalysisType');
+        const analysisType = analysisTypeSelect ? analysisTypeSelect.value : 'diagnosis';
+        return AI_ANALYSIS_TYPES[analysisType] ? analysisType : 'diagnosis';
+    }
+
     function buildAIAnalysisRequestPayload(problemDescription) {
         const nextContext = buildAIAnalysisContextSnapshot();
+        const analysisType = getAIAnalysisTypeValue();
+        const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
 
         return {
             mode: 'jira_problem_analysis',
+            analysisType: analysisType,
+            analysisTypeName: analysisTemplate.name,
             problemDescription: problemDescription,
             params: nextContext.params,
             tabStatus: nextContext.tabStatus,
@@ -3073,9 +3063,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
     function renderAIAnalysisIdleState() {
         return `
             <div class="ai-analysis-placeholder">
-                <p>描述问题后选择分析类型，点击"开始分析"按钮使用AI分析业务数据</p>
-                ${getProblemDescriptionHtml()}
-                ${getAnalysisTypeHtml()}
+                <p>选择分析类型并描述问题后，点击"开始分析"按钮使用AI分析业务数据</p>
             </div>`;
     }
 

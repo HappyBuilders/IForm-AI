@@ -810,6 +810,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         prompt_payload = {
             'problemDescription': payload.get('problemDescription', ''),
+            'analysisType': payload.get('analysisType', ''),
+            'analysisTypeName': payload.get('analysisTypeName', ''),
             'params': payload.get('params', {}),
             'tabStatus': tab_status,
             'jiraContext': jira_context,

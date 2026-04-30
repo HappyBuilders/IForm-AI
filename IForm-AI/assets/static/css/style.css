@@ -1703,65 +1703,6 @@ body {
     cursor: not-allowed;
 }
 
-/* AI分析配置区域 */
-.ai-analysis-config {
-    margin-bottom: 16px;
-    background: #f8f9fc;
-    border-radius: 8px;
-    padding: 12px 16px;
-    border: 1px solid #e8ecf4;
-}
-
-.ai-analysis-label {
-    display: block;
-    font-weight: 600;
-    color: #333;
-    margin-bottom: 8px;
-    font-size: 13px;
-}
-
-.ai-analysis-select {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    font-size: 14px;
-    background: #fff;
-    color: #333;
-    cursor: pointer;
-    transition: border-color 0.2s;
-}
-
-.ai-analysis-select:focus {
-    outline: none;
-    border-color: #667eea;
-    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-}
-
-.ai-analysis-textarea {
-    width: 100%;
-    min-height: 80px;
-    padding: 12px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    font-size: 14px;
-    font-family: inherit;
-    resize: vertical;
-    background: #fff;
-    color: #333;
-    transition: border-color 0.2s;
-}
-
-.ai-analysis-textarea:focus {
-    outline: none;
-    border-color: #667eea;
-    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-}
-
-.ai-analysis-textarea::placeholder {
-    color: #999;
-}
-
 /* 分析类型描述 */
 .ai-analysis-placeholder p {
     margin: 0 0 16px 0;

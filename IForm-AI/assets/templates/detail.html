@@ -252,6 +252,16 @@
                             </div>
                             <div class="form-grid detail-param-grid detail-param-grid-single">
                                 <div class="form-group form-group-full">
+                                    <label for="aiAnalysisType" class="form-label">
+                                        <span class="label-text">分析类型</span>
+                                    </label>
+                                    <select id="aiAnalysisType" class="form-input form-select">
+                                        <option value="diagnosis">问题场景分析</option>
+                                        <option value="overview">数据分析</option>
+                                        <option value="jira">Jira问题分析</option>
+                                    </select>
+                                </div>
+                                <div class="form-group form-group-full">
                                     <label for="aiProblemDescriptionInput" class="form-label">
                                         <span class="label-text">待分析问题内容</span>
                                         <span class="required">*</span>
