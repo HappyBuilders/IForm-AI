@@ -1680,6 +1680,36 @@ body {
     font-style: italic;
 }
 
+.raw-json-panel {
+    overflow: hidden;
+    border: 1px solid rgba(18, 74, 118, 0.12);
+    border-radius: 8px;
+    background: #f8fbfe;
+}
+
+.raw-json-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(18, 74, 118, 0.1);
+    background: #fff;
+}
+
+.raw-json-block {
+    margin: 0;
+    max-height: 520px;
+    overflow: auto;
+    padding: 16px;
+    border: 0;
+    background: transparent;
+    color: var(--text-main);
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre;
+}
+
 /* AI分析按钮 */
 #aiAnalyzeBtn {
     margin-left: auto;

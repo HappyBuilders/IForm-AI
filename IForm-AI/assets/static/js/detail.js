@@ -38,8 +38,11 @@
     const AI_ANALYSIS_TAB_KEY = 'aiAnalysis';
     const JIRA_COOKIE_STORAGE_KEY = CONFIG.storageKey + '_jira_cookie';
     const JIRA_RECENT_ISSUES_PAGE_SIZE = 10;
+    const AI_ANALYSIS_DATA_GUIDE_NAME = 'AI_ANALYSIS_DATA_GUIDE.md';
     const collapseStateStore = {};
     const PARAM_DEPENDENT_TAB_KEYS = ['formConfig', 'document', 'approval'];
+    const analysisSessionId = buildAnalysisSessionId();
+    const analysisContextFiles = {};
     let currentParams = null;
     let currentJiraAnalysisData = null;
     let currentLoadSequence = 0;
@@ -110,162 +113,6 @@
         }
     };
 
-    function handleAIAnalyzeClick() {
-        if (!currentParams) {
-            showToast('请先加载业务数据', 'error');
-            return;
-        }
-
-        if (!hasCoreBusinessDataReady()) {
-            if (elements.panels.aiAnalysis) {
-                elements.panels.aiAnalysis.innerHTML = renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
-            }
-            showToast('请先补充表单参数并加载核心页签后再使用 AI智能分析', 'error');
-            return;
-        }
-
-        // 获取选中的分析类型
-        const analysisTypeSelect = document.getElementById('aiAnalysisType');
-        const analysisType = analysisTypeSelect ? analysisTypeSelect.value : 'overview';
-        const selectedTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.overview;
-        
-        // 获取问题描述
-        const problemDescInput = elements.aiProblemDescriptionInput;
-        const problemDescription = problemDescInput ? problemDescInput.value.trim() : '';
-
-        // 收集各页签数据
-        const analysisData = {
-            params: currentParams,
-            formConfig: extractPanelData('panel-formConfig'),
-            document: extractPanelData('panel-document'),
-            approval: extractPanelData('panel-approval'),
-            businessLog: extractPanelData('panel-businessLog'),
-            // 如果有Jira数据，也加入分析
-            jira: currentJiraAnalysisData ? {
-                currentIssue: currentJiraAnalysisData.currentIssueBase,
-                similarScene: currentJiraAnalysisData.similarSceneAnalysis,
-                matches: currentJiraAnalysisData.similarSceneAnalysis?.matches || []
-            } : null,
-            // 用户输入的问题描述
-            problemDescription: problemDescription
-        };
-
-        // 显示加载状态
-        if (elements.aiAnalyzeBtn) {
-            elements.aiAnalyzeBtn.disabled = true;
-            elements.aiAnalyzeBtn.textContent = '分析中...';
-        }
-        if (elements.panels.aiAnalysis) {
-            elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在调用AI分析，请稍候...</div>';
-        }
-
-        // 使用选中的分析模板
-        analyzeWithLLM({
-            prompt: selectedTemplate.prompt,
-            data: analysisData,
-            analysisType: analysisType
-        }).then(result => {
-            if (result.code === 200 && result.data) {
-                let content = result.data.content || result.data.message || JSON.stringify(result.data, null, 2);
-                if (elements.panels.aiAnalysis) {
-                    elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-content">' + formatAIResponse(content) + '</div>';
-                }
-                showToast('AI分析完成', 'success');
-            } else {
-                throw new Error(result.message || '分析失败');
-            }
-        }).catch(error => {
-            console.error('AI分析失败:', error);
-            if (elements.panels.aiAnalysis) {
-                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-error">AI分析失败: ' + escapeHtml(error.message) + '</div>';
-            }
-            showToast('AI分析失败: ' + error.message, 'error');
-        }).finally(() => {
-            if (elements.aiAnalyzeBtn) {
-                elements.aiAnalyzeBtn.disabled = false;
-                elements.aiAnalyzeBtn.textContent = '开始分析';
-            }
-        });
-    }
-
-    async function analyzeWithLLM(payload) {
-        // 提交任务
-        const submitResponse = await fetch('/api/llm/analyze', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-        });
-        const submitResult = await submitResponse.json();
-
-        if (submitResult.code !== 202) {
-            throw new Error(submitResult.message || '任务提交失败');
-        }
-
-        const taskId = submitResult.data.taskId;
-
-        // 轮询查询状态
-        const maxAttempts = 120; // 最多轮询120次
-        const pollInterval = 5000; // 每5秒查询一次
-        let attempts = 0;
-
-        while (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
-
-            const statusResponse = await fetch(`/api/llm/analyze/status/${taskId}`);
-            const statusResult = await statusResponse.json();
-
-            if (statusResult.data.status === 'completed') {
-                return {
-                    code: 200,
-                    message: 'success',
-                    data: statusResult.data.result
-                };
-            } else if (statusResult.data.status === 'failed') {
-                throw new Error(statusResult.data.error || '分析失败');
-            }
-
-            attempts++;
-
-            // 更新UI显示进度
-            if (elements.panels.aiAnalysis) {
-                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在分析中... (' + Math.round(attempts * 5) + '秒)</div>';
-            }
-        }
-
-        throw new Error('分析超时，请稍后重试');
-    }
-
-    function extractPanelData(panelId) {
-        const panel = document.getElementById(panelId);
-        if (!panel) return null;
-
-        const data = {};
-        const items = panel.querySelectorAll('.data-item');
-        items.forEach(item => {
-            const label = item.querySelector('.data-label');
-            const value = item.querySelector('.data-value');
-            if (label && value) {
-                data[label.textContent.trim()] = value.textContent.trim();
-            }
-        });
-
-        // 如果没有 data-item，尝试获取 pre 或 code 标签的内容
-        if (Object.keys(data).length === 0) {
-            const pre = panel.querySelector('pre');
-            if (pre) {
-                try {
-                    return JSON.parse(pre.textContent);
-                } catch {
-                    return pre.textContent;
-                }
-            }
-        }
-
-        return Object.keys(data).length > 0 ? data : null;
-    }
-
     function formatAIResponse(content) {
         // 简单格式化AI返回的内容
         if (typeof content === 'string') {
@@ -303,6 +150,11 @@
             if (elements.aiProblemDescriptionInput) {
                 elements.aiProblemDescriptionInput.focus();
             }
+            return;
+        }
+
+        if (!buildAnalysisContextFileList().length) {
+            showToast('分析上下文文件尚未生成，请先重新加载相关页签数据', 'error');
             return;
         }
 
@@ -398,7 +250,6 @@
     }
 
     function buildAIAnalysisRequestPayload(problemDescription) {
-        const nextContext = buildAIAnalysisContextSnapshot();
         const analysisType = getAIAnalysisTypeValue();
         const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
 
@@ -407,12 +258,26 @@
             analysisType: analysisType,
             analysisTypeName: analysisTemplate.name,
             problemDescription: problemDescription,
-            params: nextContext.params,
-            tabStatus: nextContext.tabStatus,
-            tabs: nextContext.tabs,
-            jiraContext: nextContext.jiraContext,
+            params: sanitizeParamsForAI(currentParams || {}),
+            tabStatus: currentAnalysisContext && currentAnalysisContext.tabStatus ? Object.assign({}, currentAnalysisContext.tabStatus) : {},
+            analysisContext: {
+                sessionId: analysisSessionId,
+                files: buildAnalysisContextFileList(),
+                guideFileName: AI_ANALYSIS_DATA_GUIDE_NAME,
+                guidePath: resolveAnalysisGuidePath(),
+                instruction: '各页签原始 JSON 数据已写入 files 中列出的本地文件。请根据 guidePath 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
+            },
             generatedAt: new Date().toISOString()
         };
+    }
+
+    function buildAnalysisContextFileList() {
+        return Object.keys(analysisContextFiles).sort().map((tabKey) => Object.assign({}, analysisContextFiles[tabKey]));
+    }
+
+    function resolveAnalysisGuidePath() {
+        const anyFile = Object.values(analysisContextFiles).find((item) => item && item.guidePath);
+        return anyFile ? anyFile.guidePath : AI_ANALYSIS_DATA_GUIDE_NAME;
     }
 
     function buildAIAnalysisContextSnapshot() {
@@ -780,6 +645,7 @@
                 return;
             }
 
+            const analysisSaveTasks = [];
             primaryResults.forEach((result, index) => {
                 const tabKey = PRIMARY_TAB_KEYS[index];
                 if (result.status === 'fulfilled') {
@@ -792,6 +658,7 @@
                     } else if (tabKey === 'businessLog') {
                         runtimeContext.shared.businessLogData = result.value;
                         runtimeContext.shared.businessLogRaw = result.value;
+                        analysisSaveTasks.push(saveAnalysisContextFile('businessLog', result.value, '业务日志页签：当前页面用于分析的业务日志 JSON 数据。'));
                     }
                     elements.panels[tabKey].innerHTML = renderTabValue(tabKey, result.value);
                     successCount += 1;
@@ -799,6 +666,7 @@
                     elements.panels[tabKey].innerHTML = renderErrorBlock(result.reason);
                 }
             });
+            await Promise.allSettled(analysisSaveTasks);
 
             syncAIAnalyzeButtonState(successCount === PRIMARY_TAB_KEYS.length);
         } else {
@@ -896,7 +764,7 @@
             console.warn('Failed to preload approval data for process auth rendering:', error);
         }
 
-        return buildDocumentRenderData(parsed, runtimeContext.shared.formConfigParsed, approvalRaw);
+        return buildDocumentRenderData(parsed, runtimeContext.shared.formConfigParsed, approvalRaw, runtimeContext.shared.documentRaw);
     }
 
     async function ensureDocumentParsed(params, baseUrl, runtimeContext) {
@@ -920,7 +788,8 @@
                 const normalized = normalizeTabResponse('document', rawResponse, params);
                 const parsed = parseDocumentPayload(normalized);
                 fillTenantIdFromDocument(params, parsed);
-                runtimeContext.shared.documentRaw = normalized;
+                runtimeContext.shared.documentRaw = rawResponse;
+                await saveAnalysisContextFile('document', rawResponse, '单据数据信息页签：getFormData 接口返回的原始 JSON 数据。');
                 runtimeContext.shared.documentParsed = parsed;
                 return parsed;
             })().catch((error) => {
@@ -935,7 +804,7 @@
     async function requestFormConfigData(params, baseUrl, runtimeContext) {
         const documentParsed = await ensureDocumentParsed(params, baseUrl, runtimeContext);
         const normalized = await ensureFormConfigParsed(params, baseUrl, runtimeContext);
-        return buildFormConfigRenderData(normalized, documentParsed);
+        return buildFormConfigRenderData(normalized, documentParsed, runtimeContext.shared.formConfigRaw);
     }
 
     async function ensureFormConfigParsed(params, baseUrl, runtimeContext) {
@@ -965,6 +834,8 @@
         );
 
         const normalized = normalizeTabResponse('formConfig', rawResponse, params);
+        runtimeContext.shared.formConfigRaw = rawResponse;
+        await saveAnalysisContextFile('formConfig', rawResponse, '表单配置信息页签：billVue.json 接口返回的原始 JSON 数据。');
         runtimeContext.shared.formConfigParsed = normalized;
         runtimeContext.shared.fieldMap = buildFieldMap(normalized);
             return normalized;
@@ -978,7 +849,7 @@
 
     async function requestApprovalData(params, baseUrl, runtimeContext) {
         const normalized = await ensureApprovalParsed(params, baseUrl, runtimeContext);
-        return buildApprovalRenderData(normalized);
+        return buildApprovalRenderData(normalized, runtimeContext.shared.approvalOriginalRaw);
     }
 
     async function requestJiraAnalysisData(params, runtimeContext, options) {
@@ -999,6 +870,7 @@
         }
 
         const issueTableRaw = await requestJiraIssueTable(jiraParams);
+        await saveAnalysisContextFile('jiraIssueTable', issueTableRaw, 'Jira问题分析页签：/rest/issueNav/1/issueTable 接口返回的原始 JSON 数据。');
         const issueTable = normalizeJiraIssueTableResponse(issueTableRaw);
         const currentIssue = findCurrentJiraIssue(issueTable, jiraParams.issueKey);
 
@@ -1008,7 +880,7 @@
 
         const issueDetailRaw = await requestJiraIssueDetail(currentIssue, jiraParams);
         const issueDetail = normalizeJiraIssueDetailResponse(issueDetailRaw);
-        const renderData = buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail);
+        const renderData = buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail, null, issueTableRaw);
 
         if (runtimeContext && runtimeContext.shared) {
             runtimeContext.shared.jiraAnalysisData = renderData;
@@ -1054,6 +926,8 @@
         );
 
         const normalized = normalizeTabResponse('approval', rawResponse, params);
+        runtimeContext.shared.approvalOriginalRaw = rawResponse;
+        await saveAnalysisContextFile('approval', rawResponse, '流程审批信息页签：loadDataJson 接口返回的原始 JSON 数据。');
         runtimeContext.shared.approvalRaw = normalized;
             return normalized;
         })().catch((error) => {
@@ -1580,7 +1454,7 @@
         localStorage.setItem(CONFIG.storageKey, JSON.stringify(Object.assign({}, existing, params)));
     }
 
-    function buildFormConfigRenderData(formConfig, documentParsed) {
+    function buildFormConfigRenderData(formConfig, documentParsed, rawFormConfig) {
         const fieldMap = buildFieldMap(formConfig);
         const documentMeta = buildDocumentMeta(documentParsed);
         const mainFields = fieldMap.mainDisplayRows || [];
@@ -1615,14 +1489,19 @@
                 子字段数量: table.childFieldCount,
                 子字段明细: table.childFieldDetails
             })),
-            原始配置明细: {
-                form: formConfig.form || {},
-                formComponents: Array.isArray(formConfig.formComponents) ? formConfig.formComponents : []
-            }
+            原始配置明细: formatRawJsonContent(rawFormConfig, formConfig)
         };
     }
 
-function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
+    function formatRawJsonContent(rawValue, fallbackValue) {
+        if (typeof rawValue === 'string') {
+            return rawValue;
+        }
+
+        return JSON.stringify(rawValue !== undefined ? rawValue : fallbackValue, null, 2);
+    }
+
+function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDocument) {
         const fieldMap = buildFieldMap(formConfig);
         const mainRows = mapFieldRecord(documentParsed.head || {}, fieldMap);
         const bodyRows = Array.isArray(getNestedFieldValue(documentParsed, ['body', 'bodys']))
@@ -1662,22 +1541,18 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                     '-',
                 单据状态: getNestedFieldValue(documentParsed, ['head', 'status', 'value']) || '-'
             },
-            原始单据明细: {
-                head: documentParsed.head || {},
-                body: documentParsed.body || {},
-                formInfo: documentParsed.formInfo || {},
-                allSubDatas: documentParsed.allSubDatas || {}
-            }
+            原始单据明细: formatRawJsonContent(rawDocument, documentParsed)
         };
     }
 
-    function buildApprovalRenderData(approvalRaw) {
+    function buildApprovalRenderData(approvalRaw, rawApproval) {
         if (approvalRaw && approvalRaw.message && !approvalRaw.instanceInfo && !approvalRaw.historicTasks) {
             return formatApprovalDisplayData({
                 流程状态: '接口返回业务提示',
                 响应编码: approvalRaw.code || '-',
                 状态值: approvalRaw.status === undefined ? '-' : approvalRaw.status,
-                提示信息: approvalRaw.message
+                提示信息: approvalRaw.message,
+                原始审批数据: formatRawJsonContent(rawApproval, approvalRaw)
             });
         }
 
@@ -1711,7 +1586,8 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 节点名称: task.name || '-',
                 处理人: getNestedFieldValue(task, ['assigneeParticipant', 'name']) || task.username || task.assignee || '-',
                 到期时间: task.dueDate || '-'
-            }))
+            })),
+            原始审批数据: formatRawJsonContent(rawApproval, approvalRaw)
         });
     }
 
@@ -2088,11 +1964,55 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             return renderFormConfigValue(value);
         }
 
+        if (tabKey === 'document') {
+            return renderDocumentValue(value);
+        }
+
+        if (tabKey === 'approval') {
+            return renderApprovalValue(value);
+        }
+
         if (tabKey === 'jiraAnalysis') {
             return renderJiraAnalysisValue(value);
         }
 
         return renderBusinessValue(value);
+    }
+
+    function renderDocumentValue(value) {
+        if (!value || typeof value !== 'object') {
+            return renderBusinessValue(value);
+        }
+
+        const entries = Object.entries(value).filter(([key]) => key !== '原始单据明细');
+        const baseEntries = entries.filter(([, itemValue]) => !isComplexValue(itemValue));
+        const detailEntries = entries.filter(([, itemValue]) => isComplexValue(itemValue));
+
+        return `
+            <div class="business-data-view">
+                ${baseEntries.length ? renderBusinessSection('基础信息', '关键字段以二维表格呈现，便于业务核对。', renderBusinessTable(baseEntries)) : ''}
+                ${detailEntries.length ? renderBusinessSection('树形明细', '对象、数组和明细行以层级结构展开。', renderTreeDetails(detailEntries, 0)) : ''}
+                ${renderRawJsonSection('原始单据明细', '直接展示 getFormData 接口返回的原始 JSON 内容。', value.原始单据明细, 'document-raw')}
+            </div>
+        `;
+    }
+
+    function renderApprovalValue(value) {
+        if (!value || typeof value !== 'object') {
+            return renderBusinessValue(value);
+        }
+
+        const entries = Object.entries(value).filter(([key]) => key !== '原始审批数据');
+        const baseEntries = entries.filter(([, itemValue]) => !isComplexValue(itemValue));
+        const detailEntries = entries.filter(([, itemValue]) => isComplexValue(itemValue));
+
+        return `
+            <div class="business-data-view">
+                ${baseEntries.length ? renderBusinessSection('基础信息', '关键字段以二维表格呈现，便于业务核对。', renderBusinessTable(baseEntries)) : ''}
+                ${detailEntries.length ? renderBusinessSection('树形明细', '对象、数组和明细行以层级结构展开。', renderTreeDetails(detailEntries, 0)) : ''}
+                ${renderRawJsonSection('原始审批数据', '直接展示 loadDataJson 接口返回的原始 JSON 内容。', value.原始审批数据, 'approval-raw')}
+            </div>
+        `;
     }
 
     function renderFormConfigValue(value) {
@@ -2122,9 +2042,75 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                     { collapsible: true, sectionKey: 'main-fields' }
                 )}
                 ${renderFormConfigSubTables(value.子表配置)}
-                ${value.原始配置明细 ? renderBusinessSection('原始配置明细', '保留原始 JSON 结构，便于排查接口返回细节。', renderTreeDetails(Object.entries(value.原始配置明细), 0)) : ''}
+                ${renderRawJsonSection('原始配置明细', '直接展示 billVue.json 接口返回的原始 JSON 内容。', value.原始配置明细, 'form-config-raw')}
             </div>
         `;
+    }
+
+    function renderRawJsonSection(title, note, value, sectionKey) {
+        if (!value) {
+            return '';
+        }
+
+        return renderBusinessSection(title, note, renderRawJsonBlock(value), {
+            collapsible: true,
+            sectionKey: sectionKey,
+            collapsed: true
+        });
+    }
+
+    function renderRawJsonBlock(value) {
+        return `
+            <div class="raw-json-panel">
+                <div class="raw-json-toolbar">
+                    <button type="button" class="btn btn-secondary btn-inline btn-mini" data-raw-json-action="copy">复制</button>
+                </div>
+                <pre class="raw-json-block">${escapeHtml(String(value || ''))}</pre>
+            </div>
+        `;
+    }
+
+    async function handleRawJsonCopy(button) {
+        const panel = button.closest('.raw-json-panel');
+        const block = panel ? panel.querySelector('.raw-json-block') : null;
+        const text = block ? block.textContent : '';
+
+        if (!text) {
+            showToast('没有可复制的原始内容', 'error');
+            return;
+        }
+
+        try {
+            await copyTextToClipboard(text);
+            showToast('原始内容已复制', 'success');
+        } catch (error) {
+            showToast('复制失败，请手动选择内容复制', 'error');
+        }
+    }
+
+    async function copyTextToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-9999px';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+
+        try {
+            const succeeded = document.execCommand('copy');
+            if (!succeeded) {
+                throw new Error('copy command failed');
+            }
+        } finally {
+            document.body.removeChild(textarea);
+        }
     }
 
     function renderFormConfigSubTables(subTables) {
@@ -2207,7 +2193,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
                 })}
                 ${renderBusinessSection('近期工单列表', '使用 issueTable.table 展示当前查询条件下返回的近期工单集合，不代表和当前工单存在真实关联。', renderJiraRecentIssuesSection(value), { collapsible: true, sectionKey: 'jira-recent-issues' })}
                 ${renderBusinessSection('列表工单详情', '统一展示从相似场景工单解析或近期工单列表中打开的工单详情。', renderJiraSharedIssueDetailSection(value), { collapsible: true, sectionKey: 'jira-shared-issue-detail' })}
-                ${value.raw ? renderBusinessSection('原始返回数据', '保留 Jira 列表与详情接口原始结构，便于排查解析问题。', renderTreeDetails(Object.entries(value.raw), 0), { collapsible: true, sectionKey: 'jira-raw', collapsed: true }) : ''}
+                ${renderRawJsonSection('原始 Jira 列表数据', '直接展示 /rest/issueNav/1/issueTable 接口返回的原始 JSON 内容。', value.rawIssueTableJson, 'jira-issue-table-raw')}
             </div>
         `;
     }
@@ -2936,6 +2922,12 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             return;
         }
 
+        const rawJsonCopyButton = event.target.closest('[data-raw-json-action="copy"]');
+        if (rawJsonCopyButton) {
+            handleRawJsonCopy(rawJsonCopyButton);
+            return;
+        }
+
         const jiraActionButton = event.target.closest('[data-jira-action="view-detail"]');
         if (jiraActionButton) {
             handleJiraRecentIssueDetailAction(jiraActionButton);
@@ -3470,6 +3462,45 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         return new URL(path, proxyBase).toString();
     }
 
+    function buildAnalysisSessionId() {
+        const randomPart = Math.random().toString(36).slice(2, 10);
+        return `detail-${Date.now()}-${randomPart}`;
+    }
+
+    async function saveAnalysisContextFile(tabKey, rawData, description) {
+        try {
+            const response = await fetch(buildLocalProxyUrl('/api/analysis/context/save'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json; charset=UTF-8'
+                },
+                body: JSON.stringify({
+                    sessionId: analysisSessionId,
+                    tabKey: tabKey,
+                    description: description,
+                    rawData: rawData
+                })
+            });
+            const result = await response.json().catch(() => null);
+            if (!response.ok || !result || !result.success) {
+                const message = result && result.error && result.error.message ? result.error.message : '保存分析上下文失败';
+                throw new Error(message);
+            }
+
+            analysisContextFiles[tabKey] = {
+                tabKey: tabKey,
+                description: description,
+                filePath: result.data.filePath,
+                guidePath: result.data.guidePath,
+                updatedAt: new Date().toISOString()
+            };
+            return analysisContextFiles[tabKey];
+        } catch (error) {
+            console.warn('Failed to save analysis context file:', tabKey, error);
+            return null;
+        }
+    }
+
     function buildJiraJql(issueKey, keyword) {
         const template = CONFIG.tabs.jiraAnalysis.jqlTemplate || 'issueKey = {issueKey} order by created DESC';
         const resolvedJql = template.replace(/\{issueKey\}/g, issueKey);
@@ -3549,7 +3580,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
         return issueList.find((item) => normalizeJiraIssueKey(item && item.key) === normalizeJiraIssueKey(issueKey)) || null;
     }
 
-    function buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail, similarSceneAnalysis) {
+    function buildJiraAnalysisRenderData(params, jiraParams, issueTable, currentIssue, issueDetail, similarSceneAnalysis, rawIssueTable) {
         const currentIssueKey = normalizeJiraIssueKey(currentIssue && currentIssue.key);
         const recentIssues = Array.isArray(issueTable && issueTable.table)
             ? issueTable.table.filter((item) => normalizeJiraIssueKey(item && item.key) !== currentIssueKey).map((item) => ({
@@ -3593,6 +3624,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw) {
             similarSceneAnalysis: normalizeJiraSimilarIssuesAnalysisResponse(
                 similarSceneAnalysis || buildJiraSimilarAnalysisPendingState(issueTable)
             ),
+            rawIssueTableJson: formatRawJsonContent(rawIssueTable, issueTable),
             raw: {
                 issueTable: issueTable,
                 issueDetail: issueDetail

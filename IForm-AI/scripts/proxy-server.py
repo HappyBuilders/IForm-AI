@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 import re
+import shutil
 import socketserver
 import ssl
 import time
@@ -19,6 +20,9 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, unquote
 PORT = 18080
 DIRECTORY = Path(__file__).parent.parent / "assets"
 RUNTIME_CONFIG_PATH = DIRECTORY / "static" / "config" / "runtime-config.json"
+PROJECT_ROOT = DIRECTORY.parent
+ANALYSIS_CONTEXT_DIR = PROJECT_ROOT / ".tmp" / "analysis"
+AI_ANALYSIS_DATA_GUIDE_PATH = DIRECTORY / "AI_ANALYSIS_DATA_GUIDE.md"
 
 # Skill 目录下的参考文件
 SKILL_REFERENCES_PATH = Path.home() / 'AppData' / 'Roaming' / 'yonclaw' / 'profiles' / 'profile-c7373b7835e20fbde372b2531d53b8e35d8f06d4cc12ff2f0da53f0475b9e856' / 'userData' / 'runtime' / 'openclaw' / 'skills' / 'iform-ai' / 'references'
@@ -26,6 +30,7 @@ SKILL_REFERENCES_PATH = Path.home() / 'AppData' / 'Roaming' / 'yonclaw' / 'profi
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 SIMILAR_ISSUE_BATCH_SIZE = 30
 AI_REFERENCE_FILES = [
+    AI_ANALYSIS_DATA_GUIDE_PATH,
     DIRECTORY / '智能业务表单系统详情页数据获取技术方案.md',
     DIRECTORY / 'PROJECT_REQUIREMENTS.md',
     DIRECTORY / 'REQUIREMENT_CHANGES.md'
@@ -155,6 +160,10 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        if self.path.startswith('/api/analysis/context/save'):
+            self.handle_save_analysis_context()
+            return
+
         if self.path.startswith('/api/jira/issue-table'):
             self.handle_jira_issue_table()
             return
@@ -214,6 +223,88 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error_response(error.code, f'代理请求失败: {error.reason}')
         except Exception as error:
             self.send_error_response(500, f'代理请求异常: {error}')
+
+    def handle_save_analysis_context(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', '0') or '0')
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b''
+            body_text = self.decode_response_body(body_bytes, 'utf-8')
+            payload = json.loads(body_text or '{}')
+
+            session_id = self.normalize_analysis_path_part(payload.get('sessionId', ''))
+            tab_key = self.normalize_analysis_path_part(payload.get('tabKey', ''))
+            if not session_id or not tab_key:
+                self.send_error_response(400, '缺少 sessionId 或 tabKey 参数')
+                return
+
+            raw_data = payload.get('rawData', None)
+            description = str(payload.get('description', '') or '').strip()
+            context_root = ANALYSIS_CONTEXT_DIR.resolve()
+            session_dir = (ANALYSIS_CONTEXT_DIR / session_id).resolve()
+            if context_root not in session_dir.parents and session_dir != context_root:
+                self.send_error_response(400, '非法 sessionId')
+                return
+
+            self.cleanup_old_analysis_contexts(session_id)
+            session_dir.mkdir(parents=True, exist_ok=True)
+            file_path = session_dir / f'{tab_key}.json'
+            text = raw_data if isinstance(raw_data, str) else json.dumps(raw_data, ensure_ascii=False, indent=2)
+            file_path.write_text(text or '', encoding='utf-8')
+
+            manifest_path = session_dir / 'manifest.json'
+            manifest = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding='utf-8') or '{}')
+                except Exception:
+                    manifest = {}
+
+            manifest[tab_key] = {
+                'tabKey': tab_key,
+                'description': description,
+                'filePath': str(file_path),
+                'updatedAt': int(time.time() * 1000)
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+
+            self.send_json_response(200, {
+                'success': True,
+                'data': {
+                    'sessionId': session_id,
+                    'tabKey': tab_key,
+                    'filePath': str(file_path),
+                    'manifestPath': str(manifest_path),
+                    'guidePath': str(AI_ANALYSIS_DATA_GUIDE_PATH)
+                }
+            })
+        except json.JSONDecodeError:
+            self.send_error_response(400, '请求体不是合法的 JSON')
+        except Exception as error:
+            self.send_error_response(500, f'保存分析上下文失败: {error}')
+
+    def normalize_analysis_path_part(self, value):
+        normalized = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(value or '').strip())
+        return normalized[:80]
+
+    def cleanup_old_analysis_contexts(self, current_session_id):
+        context_root = ANALYSIS_CONTEXT_DIR.resolve()
+        if not context_root.exists():
+            return
+
+        current_session_dir = (ANALYSIS_CONTEXT_DIR / current_session_id).resolve()
+        for child in context_root.iterdir():
+            resolved_child = child.resolve()
+            if resolved_child == current_session_dir:
+                continue
+            if context_root not in resolved_child.parents:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                try:
+                    child.unlink()
+                except FileNotFoundError:
+                    pass
 
     def handle_jira_issue_table(self):
         try:
@@ -665,60 +756,6 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as error:
             self.send_error_response(500, f'Jira 问题分析失败: {error}')
 
-    def handle_llm_analyze(self):
-        """异步调用 YonClaw 大模型进行数据分析"""
-        try:
-            content_length = int(self.headers.get('Content-Length', '0') or '0')
-            body_bytes = self.rfile.read(content_length) if content_length > 0 else b''
-            body_text = self.decode_response_body(body_bytes, 'utf-8')
-            payload = json.loads(body_text or '{}')
-
-            prompt = str(payload.get('prompt', '') or '').strip()
-            data = payload.get('data', {})
-            analysis_type = payload.get('analysisType', 'overview')
-
-            if not prompt:
-                self.send_error_response(400, '缺少 prompt 参数')
-                return
-
-            # 根据分析类型构建更精确的prompt
-            full_prompt = self.build_analysis_prompt(prompt, data, analysis_type)
-
-            # 生成任务ID
-            import uuid
-            task_id = str(uuid.uuid4())
-
-            # 立即返回任务ID
-            LLM_TASKS[task_id] = {
-                'status': 'pending',
-                'result': None,
-                'error': None,
-                'prompt': full_prompt
-            }
-
-            # 启动后台线程执行
-            import threading
-            thread = threading.Thread(
-                target=self._run_llm_task,
-                args=(task_id, full_prompt),
-                daemon=True
-            )
-            thread.start()
-
-            self.send_json_response(200, {
-                'code': 202,
-                'message': '任务已提交，正在处理中',
-                'data': {
-                    'taskId': task_id,
-                    'status': 'pending'
-                }
-            })
-
-        except json.JSONDecodeError:
-            self.send_error_response(400, '请求体不是合法的 JSON')
-        except Exception as error:
-            self.send_error_response(500, f'LLM 分析失败: {error}')
-
     def _run_llm_task(self, task_id, prompt):
         """后台执行 LLM 任务"""
         LLM_TASKS[task_id]['status'] = 'running'
@@ -790,14 +827,15 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def build_jira_problem_analysis_prompt(self, payload):
         tab_status = payload.get('tabStatus', {})
-        tabs = payload.get('tabs', {})
-        jira_context = payload.get('jiraContext', {})
+        analysis_context = payload.get('analysisContext', {})
         reference_docs = self.load_ai_reference_documents()
         field_explanations = self.build_ai_tab_explanations()
 
         instruction = (
             '你是一名 Jira 问题分析工程师，同时熟悉 IForm 业务表单、单据、审批、日志和 Jira 工单场景。'
-            '你需要结合输入的问题描述、当前详情页各页签接口数据、字段含义说明以及参考文档进行问题定位。'
+            '你需要结合输入的问题描述、当前详情页各页签接口原始 JSON 文件、字段含义说明以及参考文档进行问题定位。'
+            '各页签大体量数据不会直接放在本 prompt 中，而是以本地 JSON 文件形式提供。'
+            '请先读取 analysisContext.files 中列出的文件，并结合 analysisContext.guidePath 指向的说明文档理解字段含义和页签关联。'
             '请优先依据证据链分析，不要臆造系统中不存在的字段或结论。'
             '如果信息不足，要明确指出缺失数据和待确认项。'
             '输出请使用中文，并严格按以下结构输出：'
@@ -814,9 +852,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'analysisTypeName': payload.get('analysisTypeName', ''),
             'params': payload.get('params', {}),
             'tabStatus': tab_status,
-            'jiraContext': jira_context,
+            'analysisContext': analysis_context,
             'fieldExplanations': field_explanations,
-            'tabs': tabs,
             'referenceDocs': reference_docs
         }
 
@@ -870,6 +907,76 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             })
 
         return documents
+
+    def load_selected_reference_files(self, reference_files):
+        contents = []
+        items = reference_files if isinstance(reference_files, list) else []
+
+        for item in items:
+            path = self.resolve_reference_file_path(item)
+            if not path or not path.exists():
+                continue
+
+            try:
+                text = path.read_text(encoding='utf-8')
+            except Exception as error:
+                contents.append(f'[{path.name}] 读取失败: {error}')
+                continue
+
+            contents.append(f'[{path.name}]\n{self.truncate_text(text, 12000)}')
+
+        return '\n\n'.join(contents)
+
+    def resolve_reference_file_path(self, item):
+        raw_path = ''
+        raw_name = ''
+
+        if isinstance(item, dict):
+            raw_path = str(item.get('path', '') or '').strip()
+            raw_name = str(item.get('name', '') or '').strip()
+        elif isinstance(item, str):
+            raw_name = item.strip()
+
+        if raw_path:
+            candidate = Path(raw_path).expanduser()
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                return None
+            if self.is_allowed_reference_path(resolved):
+                return resolved
+
+        if raw_name:
+            for candidate in AI_REFERENCE_FILES:
+                if candidate.name == raw_name and candidate.exists():
+                    return candidate
+
+            skill_root = SKILL_REFERENCES_PATH
+            if skill_root.exists():
+                try:
+                    resolved = (skill_root / raw_name).resolve()
+                except Exception:
+                    resolved = None
+                if resolved and self.is_allowed_reference_path(resolved) and resolved.exists():
+                    return resolved
+
+        return None
+
+    def is_allowed_reference_path(self, path):
+        try:
+            resolved = Path(path).resolve()
+        except Exception:
+            return False
+
+        allowed_roots = [DIRECTORY.resolve()]
+        if SKILL_REFERENCES_PATH.exists():
+            allowed_roots.append(SKILL_REFERENCES_PATH.resolve())
+
+        for root in allowed_roots:
+            if resolved == root or root in resolved.parents:
+                return True
+
+        return False
 
     def handle_list_reference_files(self):
         """列出可用的参考文件"""
@@ -1035,8 +1142,6 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
     # ========== AI 分析相关函数 ==========
     def build_analysis_prompt(self, base_prompt, data, analysis_type):
         """根据分析类型构建优化后的prompt"""
-        
-        # 提取各部分数据
         params = data.get('params', {})
         form_config = data.get('formConfig', {})
         document = data.get('document', {})
@@ -1046,10 +1151,8 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
         problem_desc = data.get('problemDescription', '')
         reference_files = data.get('referenceFiles', [])
 
-        # 加载选中的参考文件
         ref_content = self.load_selected_reference_files(reference_files)
 
-        # 根据分析类型构建不同的prompt
         if analysis_type == 'diagnosis':
             return self._build_diagnosis_prompt(base_prompt, params, document, approval, business_log, problem_desc, ref_content)
         elif analysis_type == 'optimization':
@@ -1057,15 +1160,18 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
         elif analysis_type == 'jira':
             return self._build_jira_prompt(base_prompt, document, approval, jira, problem_desc, ref_content)
         else:
-            return self._build_overview_prompt(base_prompt, params, form_config, document, approval, business_log, problem_desc)
+            return self._build_overview_prompt(base_prompt, params, form_config, document, approval, business_log, problem_desc, ref_content)
 
-    def _build_overview_prompt(self, base, params, form_config, document, approval, business_log, problem_desc):
+    def _build_overview_prompt(self, base, params, form_config, document, approval, business_log, problem_desc, ref_content):
         user_desc = f"\n\n【用户问题】\n{problem_desc}" if problem_desc else ""
         ref_section = f"\n\n【参考文档】\n{ref_content}" if ref_content else ""
         return f"""{base}{user_desc}{ref_section}
 
 【参数信息】
 {json.dumps(params, ensure_ascii=False, indent=2)}
+
+【表单配置】
+{json.dumps(form_config, ensure_ascii=False, indent=2)}
 
 【单据数据】
 {json.dumps(document, ensure_ascii=False, indent=2)}
@@ -1091,9 +1197,10 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
 
 请先确认数据是否正常加载，然后进行问题诊断。"""
 
-    def _build_optimization_prompt(self, base, approval, business_log, problem_desc):
+    def _build_optimization_prompt(self, base, approval, business_log, problem_desc, ref_content):
         user_desc = f"\n【用户需求】{problem_desc}" if problem_desc else ""
-        return f"""{base}{user_desc}
+        ref_section = f"\n\n【参考文档】\n{ref_content}" if ref_content else ""
+        return f"""{base}{user_desc}{ref_section}
 
 【审批流程】
 {json.dumps(approval, ensure_ascii=False, indent=2)}
@@ -1103,14 +1210,15 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
 
 请分析审批流程效率并给出优化建议。"""
 
-    def _build_jira_prompt(self, base, document, approval, jira_data, problem_desc):
+    def _build_jira_prompt(self, base, document, approval, jira_data, problem_desc, ref_content):
         jira_info = ""
         if jira_data:
             current = jira_data.get('currentIssue', {})
             matches = jira_data.get('matches', [])
             jira_info = f"当前工单: {current.get('summary', 'N/A')}\n相似工单: {len(matches)}个"
         user_desc = f"\n【用户问题】{problem_desc}" if problem_desc else ""
-        return f"""{base}{user_desc}
+        ref_section = f"\n\n【参考文档】\n{ref_content}" if ref_content else ""
+        return f"""{base}{user_desc}{ref_section}
 
 【单据数据】
 {json.dumps(document, ensure_ascii=False, indent=2)}
@@ -1122,8 +1230,6 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
 {jira_info}
 
 请结合业务数据和Jira工单进行分析。"""
-
-        return self.invoke_openclaw_agent_via_gateway(prompt_text, gateway_url, gateway_token, model)
 
     def invoke_openclaw_agent_via_gateway(self, prompt_text, gateway_url, gateway_token, model):
         """通过 Gateway OpenAI 兼容 API 调用大模型"""
