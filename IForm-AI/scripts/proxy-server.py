@@ -10,6 +10,8 @@ import re
 import shutil
 import socketserver
 import ssl
+import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.error
@@ -18,17 +20,21 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, unquote
 
 PORT = 18080
-DIRECTORY = Path(__file__).parent.parent / "assets"
+SCRIPT_PATH = Path(__file__).resolve()
+SKILL_ROOT = SCRIPT_PATH.parent.parent
+DIRECTORY = SKILL_ROOT / "assets"
 RUNTIME_CONFIG_PATH = DIRECTORY / "static" / "config" / "runtime-config.json"
-PROJECT_ROOT = DIRECTORY.parent
+PROJECT_ROOT = SKILL_ROOT
 ANALYSIS_CONTEXT_DIR = PROJECT_ROOT / ".tmp" / "analysis"
 AI_ANALYSIS_DATA_GUIDE_PATH = DIRECTORY / "AI_ANALYSIS_DATA_GUIDE.md"
-
-# Skill 目录下的参考文件
-SKILL_REFERENCES_PATH = Path.home() / 'AppData' / 'Roaming' / 'yonclaw' / 'profiles' / 'profile-c7373b7835e20fbde372b2531d53b8e35d8f06d4cc12ff2f0da53f0475b9e856' / 'userData' / 'runtime' / 'openclaw' / 'skills' / 'iform-ai' / 'references'
+PRIMARY_SKILL_REFERENCES_PATH = SKILL_ROOT / 'references'
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 SIMILAR_ISSUE_BATCH_SIZE = 30
+REFERENCE_INDEX_PREVIEW_LIMIT = 40
+REFERENCE_AUTO_SELECT_LIMIT = 6
+REFERENCE_FILE_CHUNK_SIZE = 4000
+REFERENCE_FILE_MAX_CHUNKS = 3
 AI_REFERENCE_FILES = [
     AI_ANALYSIS_DATA_GUIDE_PATH,
     DIRECTORY / '智能业务表单系统详情页数据获取技术方案.md',
@@ -38,6 +44,87 @@ AI_REFERENCE_FILES = [
 
 # 异步任务存储
 LLM_TASKS = {}  # task_id -> {'status': 'pending|running|completed|failed', 'result': None, 'error': None}
+REFERENCE_INDEX_CACHE = {'signature': None, 'data': None}
+REFERENCE_CONTENT_CACHE = {}
+UPDATE_CONFIG_SCRIPT = SCRIPT_PATH.parent / 'update-config.py'
+
+
+def get_candidate_reference_roots():
+    roots = []
+    seen = set()
+
+    def add_root(path):
+        try:
+            resolved = Path(path).resolve()
+        except Exception:
+            return
+        key = str(resolved).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(resolved)
+
+    # Always prefer the references directory next to the currently executing skill.
+    add_root(PRIMARY_SKILL_REFERENCES_PATH)
+
+    yonclaw_runtime = Path.home() / 'AppData' / 'Roaming' / 'yonclaw' / 'profiles'
+    if yonclaw_runtime.exists():
+        for profile_dir in yonclaw_runtime.iterdir():
+            if not profile_dir.is_dir():
+                continue
+            add_root(profile_dir / 'userData' / 'runtime' / 'openclaw' / 'skills' / 'iform-ai' / 'references')
+
+    return roots
+
+
+def to_project_relative_path(path):
+    try:
+        resolved = Path(path).resolve()
+        return str(resolved.relative_to(PROJECT_ROOT.resolve())).replace('\\', '/')
+    except Exception:
+        return str(path).replace('\\', '/')
+
+
+def normalize_manifest_entry(tab_key, entry):
+    item = entry if isinstance(entry, dict) else {}
+    file_ref = str(item.get('fileRef', '') or '').strip()
+    file_name = str(item.get('fileName', '') or '').strip()
+    legacy_file_path = str(item.get('filePath', '') or '').strip()
+
+    if not file_ref and legacy_file_path:
+        file_ref = to_project_relative_path(legacy_file_path)
+    if not file_name and file_ref:
+        file_name = Path(file_ref).name
+    if not file_name and legacy_file_path:
+        file_name = Path(legacy_file_path).name
+
+    return {
+        'tabKey': str(item.get('tabKey', '') or '').strip() or tab_key,
+        'description': str(item.get('description', '') or '').strip(),
+        'fileName': file_name,
+        'fileRef': file_ref,
+        'updatedAt': item.get('updatedAt')
+    }
+
+
+def refresh_runtime_config():
+    global RUNTIME_CONFIG
+
+    if not UPDATE_CONFIG_SCRIPT.exists():
+        print('[IForm-AI] 未找到配置更新脚本')
+        return
+
+    print('[IForm-AI] 启动前更新 YonClaw 配置...')
+    try:
+        subprocess.run(
+            [sys.executable, str(UPDATE_CONFIG_SCRIPT)],
+            check=True,
+            cwd=str(PROJECT_ROOT)
+        )
+        RUNTIME_CONFIG = load_runtime_config()
+        print('[IForm-AI] 已重新加载运行时配置')
+    except subprocess.CalledProcessError:
+        print('[IForm-AI] 配置更新失败，继续使用当前本地配置')
 
 
 def load_runtime_config():
@@ -255,16 +342,22 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             manifest = {}
             if manifest_path.exists():
                 try:
-                    manifest = json.loads(manifest_path.read_text(encoding='utf-8') or '{}')
+                    loaded_manifest = json.loads(manifest_path.read_text(encoding='utf-8') or '{}')
+                    if isinstance(loaded_manifest, dict):
+                        manifest = {
+                            str(existing_tab_key): normalize_manifest_entry(existing_tab_key, existing_entry)
+                            for existing_tab_key, existing_entry in loaded_manifest.items()
+                        }
                 except Exception:
                     manifest = {}
 
-            manifest[tab_key] = {
+            manifest[tab_key] = normalize_manifest_entry(tab_key, {
                 'tabKey': tab_key,
                 'description': description,
-                'filePath': str(file_path),
+                'fileName': file_path.name,
+                'fileRef': to_project_relative_path(file_path),
                 'updatedAt': int(time.time() * 1000)
-            }
+            })
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
 
             self.send_json_response(200, {
@@ -272,9 +365,12 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 'data': {
                     'sessionId': session_id,
                     'tabKey': tab_key,
-                    'filePath': str(file_path),
-                    'manifestPath': str(manifest_path),
-                    'guidePath': str(AI_ANALYSIS_DATA_GUIDE_PATH)
+                    'sessionRef': to_project_relative_path(session_dir),
+                    'fileName': file_path.name,
+                    'fileRef': to_project_relative_path(file_path),
+                    'manifestRef': to_project_relative_path(manifest_path),
+                    'guideFileName': AI_ANALYSIS_DATA_GUIDE_PATH.name,
+                    'guideRef': to_project_relative_path(AI_ANALYSIS_DATA_GUIDE_PATH)
                 }
             })
         except json.JSONDecodeError:
@@ -826,40 +922,70 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return task_id
 
     def build_jira_problem_analysis_prompt(self, payload):
+        analysis_type = str(payload.get('analysisType', '') or '').strip()
         tab_status = payload.get('tabStatus', {})
         analysis_context = payload.get('analysisContext', {})
-        reference_docs = self.load_ai_reference_documents()
-        field_explanations = self.build_ai_tab_explanations()
+        raw_params = payload.get('params', {})
+        params = raw_params if isinstance(raw_params, dict) else {}
+        is_reference_only_analysis = analysis_type == 'diagnosis'
 
-        instruction = (
-            '你是一名 Jira 问题分析工程师，同时熟悉 IForm 业务表单、单据、审批、日志和 Jira 工单场景。'
-            '你需要结合输入的问题描述、当前详情页各页签接口原始 JSON 文件、字段含义说明以及参考文档进行问题定位。'
-            '各页签大体量数据不会直接放在本 prompt 中，而是以本地 JSON 文件形式提供。'
-            '请先读取 analysisContext.files 中列出的文件，并结合 analysisContext.guidePath 指向的说明文档理解字段含义和页签关联。'
-            '请优先依据证据链分析，不要臆造系统中不存在的字段或结论。'
-            '如果信息不足，要明确指出缺失数据和待确认项。'
-            '输出请使用中文，并严格按以下结构输出：'
-            '1. 问题理解'
-            '2. 问题定位'
-            '4. 参考文档'
-            '5. 解决方案'
-            '6. 最终结论'
-        )
+        if is_reference_only_analysis:
+            instruction = (
+                '你是一名表单场景分析专家。'
+                '当前分析类型为场景分析，请忽略业务数据、临时文件中的各页签 JSON、以及任何单据/审批/日志上下文。'
+                '你只需要根据用户的问题描述，并结合 references 参考文件结构、命中的参考文档分片和相关说明文档，进行场景匹配、功能说明和方案建议。'
+                '不要要求调用方补充业务数据，也不要把业务数据作为判断依据。'
+                '如果参考文件中没有足够证据，要明确指出缺失的参考依据。'
+                '输出请使用中文，并严格按以下结构输出：'
+                '1. 场景理解'
+                '2. 参考依据'
+                '3. 功能使用建议'
+                '4. 配置或操作方案'
+                '5. 最终结论'
+            )
+        else:
+            instruction = (
+                '你是一名 Jira 问题分析工程师，同时熟悉 IForm 业务表单、单据、审批、日志和 Jira 工单场景。'
+                '你需要结合输入的问题描述、当前详情页各页签接口原始 JSON 文件、字段含义说明以及参考文档进行问题定位。'
+                '各页签大体量数据不会直接放在本 prompt 中，而是以本地 JSON 文件形式提供。'
+                '请先读取 analysisContext.files 中列出的相对文件引用，并结合 analysisContext.guideRef 指向的说明文档理解字段含义和页签关联。'
+                '不要要求调用方重复粘贴各页签 JSON，也不要假设 prompt 中已经内嵌了完整业务数据。'
+                '请优先依据证据链分析，不要臆造系统中不存在的字段或结论。'
+                '如果信息不足，要明确指出缺失数据和待确认项。'
+                '输出请使用中文，并严格按以下结构输出：'
+                '1. 问题理解'
+                '2. 问题定位'
+                '4. 参考文档'
+                '5. 解决方案'
+                '6. 最终结论'
+            )
+
+        minimal_params = {} if is_reference_only_analysis else {
+            'environment': params.get('environment', ''),
+            'pkBo': params.get('pkBo', ''),
+            'pkBoins': params.get('pkBoins', ''),
+            'jiraIssueKey': params.get('jiraIssueKey', '')
+        }
+        minimal_analysis_context = {
+            'sessionId': analysis_context.get('sessionId', ''),
+            'guideFileName': analysis_context.get('guideFileName', ''),
+            'guideRef': analysis_context.get('guideRef', ''),
+            'files': [] if is_reference_only_analysis else analysis_context.get('files', []),
+            'instruction': analysis_context.get('instruction', '')
+        }
 
         prompt_payload = {
             'problemDescription': payload.get('problemDescription', ''),
-            'analysisType': payload.get('analysisType', ''),
+            'analysisType': analysis_type,
             'analysisTypeName': payload.get('analysisTypeName', ''),
-            'params': payload.get('params', {}),
-            'tabStatus': tab_status,
-            'analysisContext': analysis_context,
-            'fieldExplanations': field_explanations,
-            'referenceDocs': reference_docs
+            'params': minimal_params,
+            'tabStatus': {} if is_reference_only_analysis else tab_status,
+            'analysisContext': minimal_analysis_context
         }
 
         return (
             f"{instruction}\n\n"
-            "以下是待分析上下文，请结合这些结构化数据完成问题分析：\n"
+            "以下是最小分析上下文，请先基于文件引用和说明文档按需读取，再完成问题分析：\n"
             f"{json.dumps(prompt_payload, ensure_ascii=False, indent=2)}"
         )
 
@@ -908,24 +1034,280 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         return documents
 
-    def load_selected_reference_files(self, reference_files):
-        contents = []
-        items = reference_files if isinstance(reference_files, list) else []
+    def _safe_reference_mtime(self, path):
+        try:
+            return int(path.stat().st_mtime)
+        except Exception:
+            return 0
 
-        for item in items:
+    def _extract_reference_keywords(self, value):
+        text = str(value or '').strip().lower()
+        if not text:
+            return []
+
+        text = text.replace('\\', '/')
+        tokens = []
+        for part in re.split(r'[/\s._\-()（）【】\[\],，;；:：]+', text):
+            token = part.strip()
+            if len(token) < 2:
+                continue
+            tokens.append(token)
+
+        seen = set()
+        ordered = []
+        for token in tokens:
+            if token not in seen:
+                seen.add(token)
+                ordered.append(token)
+        return ordered
+
+    def _collect_skill_reference_files(self):
+        files = []
+        for root in get_candidate_reference_roots():
+            if not root.exists():
+                continue
+            for path in root.glob('**/*.md'):
+                if path.is_file():
+                    files.append((root, path.resolve()))
+
+        return sorted(
+            files,
+            key=lambda item: (
+                0 if item[0] == PRIMARY_SKILL_REFERENCES_PATH.resolve() else 1,
+                str(item[1].relative_to(item[0])).lower()
+            )
+        )
+
+    def get_reference_index(self):
+        files = self._collect_skill_reference_files()
+        signature = tuple(
+            (
+                str(root),
+                str(path.relative_to(root)),
+                self._safe_reference_mtime(path),
+                path.stat().st_size
+            )
+            for root, path in files
+        )
+        cached = REFERENCE_INDEX_CACHE
+        if cached['signature'] == signature and cached['data'] is not None:
+            return cached['data']
+
+        entries = []
+        category_counts = {}
+
+        for root, path in files:
+            rel_path = str(path.relative_to(root)).replace('\\', '/')
+            parts = list(path.relative_to(root).parts)
+            keywords = []
+            for part in parts:
+                keywords.extend(self._extract_reference_keywords(Path(part).stem))
+                if Path(part).suffix:
+                    keywords.extend(self._extract_reference_keywords(Path(part).suffix.lstrip('.')))
+
+            unique_keywords = []
+            seen_keywords = set()
+            for keyword in keywords:
+                if keyword not in seen_keywords:
+                    seen_keywords.add(keyword)
+                    unique_keywords.append(keyword)
+
+            top_level = parts[0] if parts else 'root'
+            category_counts[top_level] = category_counts.get(top_level, 0) + 1
+
+            entries.append({
+                'name': path.name,
+                'path': str(path),
+                'relativePath': rel_path,
+                'root': str(root),
+                'source': 'execution-skill' if root == PRIMARY_SKILL_REFERENCES_PATH.resolve() else 'yonclaw-runtime',
+                'size': path.stat().st_size,
+                'topLevel': top_level,
+                'keywords': unique_keywords,
+                'mtime': self._safe_reference_mtime(path)
+            })
+
+        data = {
+            'root': str(PRIMARY_SKILL_REFERENCES_PATH.resolve()),
+            'roots': [str(root) for root in get_candidate_reference_roots()],
+            'entries': entries,
+            'categoryCounts': category_counts,
+            'signature': signature
+        }
+        REFERENCE_INDEX_CACHE['signature'] = signature
+        REFERENCE_INDEX_CACHE['data'] = data
+        return data
+
+    def score_reference_entry(self, entry, query_keywords):
+        if not query_keywords:
+            return 0
+
+        haystack = ' '.join([
+            str(entry.get('relativePath', '')).lower(),
+            ' '.join(entry.get('keywords', []))
+        ])
+        score = 0
+        for keyword in query_keywords:
+            if keyword == entry.get('topLevel', '').lower():
+                score += 6
+            elif f'/{keyword}/' in f"/{entry.get('relativePath', '').lower()}/":
+                score += 5
+            elif keyword in haystack:
+                score += 3
+        return score
+
+    def select_reference_entries(self, query_text='', requested_files=None, limit=REFERENCE_AUTO_SELECT_LIMIT):
+        index = self.get_reference_index()
+        entries = index.get('entries', [])
+        requested_files = requested_files if isinstance(requested_files, list) else []
+        selected = []
+        selected_paths = set()
+
+        for item in requested_files:
             path = self.resolve_reference_file_path(item)
-            if not path or not path.exists():
+            if not path:
+                continue
+            resolved = str(path.resolve())
+            if resolved in selected_paths:
+                continue
+            entry = next((candidate for candidate in entries if candidate.get('path') == resolved), None)
+            if entry:
+                selected.append(entry)
+                selected_paths.add(resolved)
+
+        query_keywords = self._extract_reference_keywords(query_text)
+        scored = []
+        for entry in entries:
+            resolved = entry.get('path')
+            if resolved in selected_paths:
+                continue
+            score = self.score_reference_entry(entry, query_keywords)
+            if score > 0:
+                scored.append((score, entry))
+
+        scored.sort(key=lambda item: (-item[0], len(item[1].get('relativePath', '')), item[1].get('relativePath', '')))
+        for _, entry in scored:
+            if len(selected) >= limit:
+                break
+            selected.append(entry)
+            selected_paths.add(entry.get('path'))
+
+        return selected
+
+    def get_reference_file_chunks(self, path):
+        resolved = path.resolve()
+        cache_key = str(resolved)
+        mtime = self._safe_reference_mtime(resolved)
+        cached = REFERENCE_CONTENT_CACHE.get(cache_key)
+        if cached and cached.get('mtime') == mtime:
+            return cached.get('chunks', [])
+
+        text = resolved.read_text(encoding='utf-8')
+        segments = re.split(r'\n\s*\n', text)
+        chunks = []
+        current = []
+        current_size = 0
+
+        for segment in segments:
+            block = segment.strip()
+            if not block:
+                continue
+            block_size = len(block) + 2
+            if current and current_size + block_size > REFERENCE_FILE_CHUNK_SIZE:
+                chunks.append('\n\n'.join(current))
+                current = []
+                current_size = 0
+            current.append(block)
+            current_size += block_size
+
+        if current:
+            chunks.append('\n\n'.join(current))
+
+        if not chunks and text.strip():
+            chunks = [self.truncate_text(text.strip(), REFERENCE_FILE_CHUNK_SIZE)]
+
+        REFERENCE_CONTENT_CACHE[cache_key] = {
+            'mtime': mtime,
+            'chunks': chunks
+        }
+        return chunks
+
+    def load_reference_content_by_entries(self, entries, query_text=''):
+        contents = []
+        query_keywords = self._extract_reference_keywords(query_text)
+
+        for entry in entries:
+            path = Path(entry.get('path', ''))
+            if not path.exists():
                 continue
 
             try:
-                text = path.read_text(encoding='utf-8')
+                chunks = self.get_reference_file_chunks(path)
             except Exception as error:
-                contents.append(f'[{path.name}] 读取失败: {error}')
+                contents.append(f"[{entry.get('relativePath')}]\n读取失败: {error}")
                 continue
 
-            contents.append(f'[{path.name}]\n{self.truncate_text(text, 12000)}')
+            scored_chunks = []
+            for index, chunk in enumerate(chunks):
+                score = 0
+                lowered_chunk = chunk.lower()
+                for keyword in query_keywords:
+                    if keyword in lowered_chunk:
+                        score += 2
+                if index == 0:
+                    score += 1
+                scored_chunks.append((score, index, chunk))
+
+            scored_chunks.sort(key=lambda item: (-item[0], item[1]))
+            selected_chunks = scored_chunks[:REFERENCE_FILE_MAX_CHUNKS]
+            selected_chunks.sort(key=lambda item: item[1])
+
+            chunk_texts = []
+            for _, index, chunk in selected_chunks:
+                chunk_texts.append(f"--- 分片 {index + 1}/{len(chunks)} ---\n{self.truncate_text(chunk, REFERENCE_FILE_CHUNK_SIZE)}")
+
+            contents.append(f"[{entry.get('relativePath')}]\n" + '\n\n'.join(chunk_texts))
 
         return '\n\n'.join(contents)
+
+    def build_reference_index_guide(self, selected_entries=None, query_text=''):
+        index = self.get_reference_index()
+        entries = index.get('entries', [])
+        if not entries:
+            return ''
+
+        selected_entries = selected_entries or []
+        selected_paths = {entry.get('relativePath') for entry in selected_entries}
+        preview_entries = entries[:REFERENCE_INDEX_PREVIEW_LIMIT]
+        preview_lines = []
+        for entry in preview_entries:
+            marker = ' *' if entry.get('relativePath') in selected_paths else ''
+            preview_lines.append(f"- {entry.get('relativePath')}{marker}")
+        if len(entries) > REFERENCE_INDEX_PREVIEW_LIMIT:
+            preview_lines.append(f"- ... 其余 {len(entries) - REFERENCE_INDEX_PREVIEW_LIMIT} 个文档按目录层级索引管理")
+
+        category_lines = []
+        for category, count in sorted(index.get('categoryCounts', {}).items()):
+            category_lines.append(f"- {category}: {count} 个")
+
+        query_hint = f"\n当前问题关键词：{', '.join(self._extract_reference_keywords(query_text)[:12])}" if query_text else ''
+        return (
+            "【参考资料索引】\n"
+            f"当前执行 skill 根目录：{PROJECT_ROOT}\n"
+            f"优先 references 根目录：{index.get('root')}\n"
+            "按目录层级组织关键词入口，优先根据目录名、子目录名、文件名定位资料，不要一次性扫描全部文档。\n"
+            "使用策略：先看索引，再按关键词命中文件，再按分片读取命中片段，优先复用已加载结果。\n"
+            f"{query_hint}\n"
+            "分类概览：\n"
+            f"{chr(10).join(category_lines)}\n"
+            "索引预览：\n"
+            f"{chr(10).join(preview_lines)}"
+        )
+
+    def load_selected_reference_files(self, reference_files):
+        items = reference_files if isinstance(reference_files, list) else []
+        entries = self.select_reference_entries('', items, limit=max(len(items), REFERENCE_AUTO_SELECT_LIMIT))
+        return self.load_reference_content_by_entries(entries)
 
     def resolve_reference_file_path(self, item):
         raw_path = ''
@@ -951,13 +1333,12 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if candidate.name == raw_name and candidate.exists():
                     return candidate
 
-            skill_root = SKILL_REFERENCES_PATH
-            if skill_root.exists():
+            for skill_root in get_candidate_reference_roots():
                 try:
                     resolved = (skill_root / raw_name).resolve()
                 except Exception:
-                    resolved = None
-                if resolved and self.is_allowed_reference_path(resolved) and resolved.exists():
+                    continue
+                if self.is_allowed_reference_path(resolved) and resolved.exists():
                     return resolved
 
         return None
@@ -969,8 +1350,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             return False
 
         allowed_roots = [DIRECTORY.resolve()]
-        if SKILL_REFERENCES_PATH.exists():
-            allowed_roots.append(SKILL_REFERENCES_PATH.resolve())
+        allowed_roots.extend(get_candidate_reference_roots())
 
         for root in allowed_roots:
             if resolved == root or root in resolved.parents:
@@ -980,17 +1360,18 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_list_reference_files(self):
         """列出可用的参考文件"""
-        # 获取 skill references 目录下的文件（递归扫描所有子目录）
+        reference_index = self.get_reference_index()
         skill_files = []
-        if SKILL_REFERENCES_PATH.exists():
-            for f in SKILL_REFERENCES_PATH.glob('**/*.md'):
-                # 相对路径
-                rel_path = f.relative_to(SKILL_REFERENCES_PATH)
-                skill_files.append({
-                    'name': str(rel_path),
-                    'path': str(f),
-                    'size': f.stat().st_size
-                })
+        for entry in reference_index.get('entries', []):
+            skill_files.append({
+                'name': entry.get('relativePath'),
+                'path': entry.get('path'),
+                'root': entry.get('root'),
+                'source': entry.get('source'),
+                'size': entry.get('size'),
+                'topLevel': entry.get('topLevel'),
+                'keywords': entry.get('keywords', [])
+            })
         
         # 获取 assets 目录下的文件
         asset_files = []
@@ -1005,6 +1386,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_json_response(200, {
             'code': 200,
             'data': {
+                'root': reference_index.get('root'),
+                'categoryCounts': reference_index.get('categoryCounts', {}),
                 'skillReferences': skill_files,
                 'assetReferences': asset_files
             }
@@ -1083,61 +1466,10 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def inject_reference_guide(self, prompt_text):
         """注入参考文档扫描指导"""
-        # 获取 references 文件夹路径
-        ref_path = SKILL_REFERENCES_PATH
-        
-        if not ref_path.exists():
+        guide = self.build_reference_index_guide()
+        if not guide:
             return prompt_text
-        
-        # 递归扫描所有 .md 文件（任意层级）
-        files = list(ref_path.glob('**/*.md'))
-        count = len(files)
-        
-        if count == 0:
-            return prompt_text
-        
-        # 列出文件清单供智能体参考
-        file_list = '\n'.join([f.name for f in files[:10]])
-        more = f"\n... 还有 {count-10} 个" if count > 10 else ""
-        
-        # 告知智能体去扫描 references 文件夹
-        guide = f"""
-
-【参考资料】
-references 文件夹中包含 {count} 个参考文档，路径如下：
-{str(ref_path)}
-
-文档列表：
-{file_list}{more}
-
-如有需要，你可以读取这些文档获取相关信息。
-
-【参考资料】
-如有需要，你可扫描 references 文件夹获取相关参考资料：
-{str(ref_path)}
-
-该文件夹包含 {count} 个参考文档。"""
-        
-        return prompt_text + guide
-        
-        for f in AI_REFERENCE_FILES:
-            if f.exists():
-                ref_files.append(f.name)
-        
-        if not ref_files:
-            return prompt_text
-        
-        # 在 prompt 末尾添加参考文档指导
-        ref_list = '\n'.join([f'- {name}' for name in ref_files])
-        guide = f"""
-
-【参考文档】
-如需了解系统架构、API配置、数据模型等信息，可参考以下文档：
-{ref_list}
-
-当需要时，你可以通过读取这些文件获取相关背景知识。"""
-        
-        return prompt_text + guide
+        return f"{prompt_text}\n\n{guide}"
 
     # ========== AI 分析相关函数 ==========
     def build_analysis_prompt(self, base_prompt, data, analysis_type):
@@ -1151,21 +1483,24 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
         problem_desc = data.get('problemDescription', '')
         reference_files = data.get('referenceFiles', [])
 
-        ref_content = self.load_selected_reference_files(reference_files)
+        selected_entries = self.select_reference_entries(problem_desc, reference_files)
+        ref_index_guide = self.build_reference_index_guide(selected_entries, problem_desc)
+        ref_content = self.load_reference_content_by_entries(selected_entries, problem_desc)
 
         if analysis_type == 'diagnosis':
-            return self._build_diagnosis_prompt(base_prompt, params, document, approval, business_log, problem_desc, ref_content)
+            return self._build_diagnosis_prompt(base_prompt, params, document, approval, business_log, problem_desc, ref_index_guide, ref_content)
         elif analysis_type == 'optimization':
-            return self._build_optimization_prompt(base_prompt, approval, business_log, problem_desc, ref_content)
+            return self._build_optimization_prompt(base_prompt, approval, business_log, problem_desc, ref_index_guide, ref_content)
         elif analysis_type == 'jira':
-            return self._build_jira_prompt(base_prompt, document, approval, jira, problem_desc, ref_content)
+            return self._build_jira_prompt(base_prompt, document, approval, jira, problem_desc, ref_index_guide, ref_content)
         else:
-            return self._build_overview_prompt(base_prompt, params, form_config, document, approval, business_log, problem_desc, ref_content)
+            return self._build_overview_prompt(base_prompt, params, form_config, document, approval, business_log, problem_desc, ref_index_guide, ref_content)
 
-    def _build_overview_prompt(self, base, params, form_config, document, approval, business_log, problem_desc, ref_content):
+    def _build_overview_prompt(self, base, params, form_config, document, approval, business_log, problem_desc, ref_index_guide, ref_content):
         user_desc = f"\n\n【用户问题】\n{problem_desc}" if problem_desc else ""
-        ref_section = f"\n\n【参考文档】\n{ref_content}" if ref_content else ""
-        return f"""{base}{user_desc}{ref_section}
+        ref_index_section = f"\n\n{ref_index_guide}" if ref_index_guide else ""
+        ref_section = f"\n\n【按需加载的参考文档分片】\n{ref_content}" if ref_content else ""
+        return f"""{base}{user_desc}{ref_index_section}{ref_section}
 
 【参数信息】
 {json.dumps(params, ensure_ascii=False, indent=2)}
@@ -1182,11 +1517,12 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
 【业务日志】
 {json.dumps(business_log, ensure_ascii=False, indent=2)}"""
 
-    def _build_diagnosis_prompt(self, base, params, document, approval, business_log, problem_desc, ref_content):
-        ref_section = f"\n\n【参考文档】\n{ref_content}" if ref_content else ""
+    def _build_diagnosis_prompt(self, base, params, document, approval, business_log, problem_desc, ref_index_guide, ref_content):
+        ref_index_section = f"\n\n{ref_index_guide}" if ref_index_guide else ""
+        ref_section = f"\n\n【按需加载的参考文档分片】\n{ref_content}" if ref_content else ""
         return f"""{base}
 
-【参考文档】{ref_section}
+{ref_index_section}{ref_section}
 
 【参数】{params.get('pkBo', 'N/A')} 
 【单据数据】{json.dumps(document, ensure_ascii=False, indent=2)}
@@ -1197,10 +1533,11 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
 
 请先确认数据是否正常加载，然后进行问题诊断。"""
 
-    def _build_optimization_prompt(self, base, approval, business_log, problem_desc, ref_content):
+    def _build_optimization_prompt(self, base, approval, business_log, problem_desc, ref_index_guide, ref_content):
         user_desc = f"\n【用户需求】{problem_desc}" if problem_desc else ""
-        ref_section = f"\n\n【参考文档】\n{ref_content}" if ref_content else ""
-        return f"""{base}{user_desc}{ref_section}
+        ref_index_section = f"\n\n{ref_index_guide}" if ref_index_guide else ""
+        ref_section = f"\n\n【按需加载的参考文档分片】\n{ref_content}" if ref_content else ""
+        return f"""{base}{user_desc}{ref_index_section}{ref_section}
 
 【审批流程】
 {json.dumps(approval, ensure_ascii=False, indent=2)}
@@ -1210,15 +1547,16 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
 
 请分析审批流程效率并给出优化建议。"""
 
-    def _build_jira_prompt(self, base, document, approval, jira_data, problem_desc, ref_content):
+    def _build_jira_prompt(self, base, document, approval, jira_data, problem_desc, ref_index_guide, ref_content):
         jira_info = ""
         if jira_data:
             current = jira_data.get('currentIssue', {})
             matches = jira_data.get('matches', [])
             jira_info = f"当前工单: {current.get('summary', 'N/A')}\n相似工单: {len(matches)}个"
         user_desc = f"\n【用户问题】{problem_desc}" if problem_desc else ""
-        ref_section = f"\n\n【参考文档】\n{ref_content}" if ref_content else ""
-        return f"""{base}{user_desc}{ref_section}
+        ref_index_section = f"\n\n{ref_index_guide}" if ref_index_guide else ""
+        ref_section = f"\n\n【按需加载的参考文档分片】\n{ref_content}" if ref_content else ""
+        return f"""{base}{user_desc}{ref_index_section}{ref_section}
 
 【单据数据】
 {json.dumps(document, ensure_ascii=False, indent=2)}
@@ -1930,19 +2268,69 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
         }
 
     def get_jira_cookie(self):
-        jira_cookie = (self.headers.get('x-jira-cookie') or '').strip()
-        if jira_cookie.lower().startswith('cookie:'):
-            return jira_cookie.split(':', 1)[1].strip()
-        return jira_cookie
+        jira_cookie = (self.headers.get('x-jira-cookie') or self.headers.get('Cookie') or '').strip()
+        return self.normalize_jira_cookie_value(jira_cookie)
+
+    def normalize_jira_cookie_value(self, raw_value):
+        cookie_text = str(raw_value or '').strip()
+        if not cookie_text:
+            return ''
+
+        if cookie_text.lower().startswith('cookie:'):
+            cookie_text = cookie_text.split(':', 1)[1].strip()
+
+        cookie_text = re.sub(r'[\r\n\t]+', ' ', cookie_text)
+        cookie_text = re.sub(r';\s*;+', ';', cookie_text)
+        segments = []
+        for part in cookie_text.split(';'):
+            item = part.strip()
+            if not item or '=' not in item:
+                continue
+
+            name, value = item.split('=', 1)
+            normalized_name = name.strip()
+            normalized_value = value.strip()
+            if not normalized_name or not normalized_value:
+                continue
+
+            segments.append(f'{normalized_name}={normalized_value}')
+
+        return '; '.join(segments)
+
+    def get_cookie_value_by_name(self, cookie_text, target_name):
+        normalized_target = str(target_name or '').strip().lower()
+        if not normalized_target:
+            return ''
+
+        for part in str(cookie_text or '').split(';'):
+            item = part.strip()
+            if not item or '=' not in item:
+                continue
+
+            name, value = item.split('=', 1)
+            if name.strip().lower() == normalized_target:
+                return value.strip()
+
+        return ''
 
     def build_jira_headers(self, jira_cookie, extra_headers=None):
         headers = {
-            'Accept': '*/*',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
             'Cookie': jira_cookie,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
             'x-atlassian-token': 'no-check',
             'x-requested-with': 'XMLHttpRequest',
+            'x-sitemesh-off': 'true',
             '__amdmodulename': 'jira/issue/utils/xsrf-token-header'
         }
+
+        # 已移除 xsrf_token 避免401错误
+        # 如需恢复，可取消下面注释
+        # xsrf_token = self.get_cookie_value_by_name(jira_cookie, 'atlassian.xsrf.token')
+        # if xsrf_token:
+        #     headers['x-xsrf-token'] = xsrf_token
+
         if extra_headers:
             headers.update(extra_headers)
         return headers
@@ -1959,7 +2347,8 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
                 error_body = ''
 
         if error.code in (401, 403):
-            self.send_error_response(error.code, 'Jira 系统 Cookie 无效或无权限，请重新填写后重试')
+            message = self.build_jira_auth_error_message(error, error_body)
+            self.send_error_response(error.code, message)
             return
 
         message = f'Jira 请求失败: HTTP {error.code}'
@@ -1970,6 +2359,29 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
             message = 'Jira 请求返回登录页，当前 Jira 系统 Cookie 可能已失效，请重新填写后重试'
 
         self.send_error_response(error.code, message)
+
+    def build_jira_auth_error_message(self, error, error_body=''):
+        if self.looks_like_jira_login_page(error_body):
+            return 'Jira 请求返回登录页，当前 Jira 系统 Cookie 可能已失效，请重新填写后重试'
+
+        headers = error.headers or {}
+        login_reason = (
+            headers.get('X-Seraph-LoginReason')
+            or headers.get('x-seraph-loginreason')
+            or ''
+        ).strip()
+        location = (headers.get('Location') or headers.get('location') or '').strip()
+
+        if login_reason:
+            return f'Jira 鉴权失败，X-Seraph-LoginReason={login_reason}。请确认当前 Cookie 是否来自已登录且仍有效的 Jira 页面'
+
+        if location and ('login' in location.lower() or 'signin' in location.lower()):
+            return 'Jira 已重定向到登录页，当前 Jira 系统 Cookie 可能已失效，请重新填写后重试'
+
+        message = f'Jira 系统 Cookie 无效或无权限，请重新填写后重试（HTTP {error.code}'
+        if error.reason:
+            message = f'{message} {error.reason}'
+        return f'{message}）'
 
     def looks_like_jira_login_page(self, body_text):
         normalized_body = (body_text or '').lower()
@@ -2051,6 +2463,7 @@ references 文件夹中包含 {count} 个参考文档，路径如下：
 
 
 def main():
+    refresh_runtime_config()
     os.chdir(DIRECTORY)
 
     with socketserver.TCPServer(("", PORT), ProxyHTTPRequestHandler) as httpd:

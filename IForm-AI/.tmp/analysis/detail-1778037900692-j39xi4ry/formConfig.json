@@ -1,0 +1,32 @@
+{
+	"pk_temp":"cd328a48b631428289deca3c319775bd",
+  "pk_procdef": "iform_c4bce6c82e:2:22cabd1d-3ec4-11f1-b34f-561a4704d1be",
+	"formBtnVal": {},
+  "defaultComment": {},
+  "sortIndex": {},
+  "processLauncher": "",
+  "BPMTabView": "HISTORY",
+	"form": {
+		"title": "测试退回中间环节",
+		"formStyle": {"titleFontFamily":"","textAlign":"left"},
+		"dataPreset": {},
+        "icon": "icon-1"
+  },
+  "cusBtns": [],
+  "isMultiBPM": false,
+  "readCopyNeedConfirm": false,
+  "forbidModify": false,
+  "flowAttWithWaterMark": false,
+  "advancedFreeFlowEdit": false,
+  "isAdvancedFreeFlow": false,
+  "enableApprovalOpinions":  false,
+	"formComponents":[{"fieldId":"20260423112440VqanXOXteK","title":"文本","componentKey":"Text","invisible":false,"editable":"","complexCal":"","complexTrueVal":"","numberFields":"","couldScan":false,"complexCalRelateField":[],"numberFieldArr":[],"textAlign":"","isReadonly":false,"contentTextAlign":"left","inLeft":false,"flexibleTitle":false,"crux":false,"hideTitle":false,"hideTopTitle":false,"required":false,"mainTableField":"","visible":true,"isOperationRule":false,"showOperValueInGird":true,"rowCount":true,"rowCountUnique":false,"isTotal":false,"average":false,"maxInGird":false,"minInGird":false,"calculate":false,"calType":"2","size":"large","borderColor":"","titleBold":false,"titleUnderline":false,"titleFontColor":"","titleFontFamily":"","titleFontSize":"","tips":"","margin":"","uniqueCheck":false,"isTextArea":false,"autosize":false,"defaultValue":"","uniqueCheckText":"","columncode":"wb_1776914687281300"},{"fieldId":"20260423112442DcvStmViKH","title":"多行文本","componentKey":"Text","invisible":false,"editable":"","complexCal":"","complexTrueVal":"","numberFields":"","complexCalRelateField":[],"numberFieldArr":[],"textAlign":"","isReadonly":false,"inLeft":false,"flexibleTitle":false,"crux":false,"hideTitle":false,"hideTopTitle":false,"required":false,"mainTableField":"","visible":true,"isOperationRule":false,"showOperValueInGird":true,"rowCount":true,"rowCountUnique":false,"isTotal":false,"average":false,"maxInGird":false,"minInGird":false,"calculate":false,"calType":"2","size":"large","borderColor":"","titleBold":false,"titleUnderline":false,"titleFontColor":"","titleFontFamily":"","titleFontSize":"","tips":"","margin":"","uniqueCheck":false,"isTextArea":true,"autosize":false,"defaultValue":"","couldScan":false,"contentTextAlign":"left","uniqueCheckText":"","columncode":"dxwb_1776914687281282"}],
+	"hideProcessAnnex":0,
+	"hideCopyPerson":0,
+    "canCopy": true,
+    "canShare": true,
+	"canSavePDF": true,
+	"canWebPrint": true,
+  "icon": "icon-1"
+
+}

@@ -98,8 +98,8 @@
     const AI_ANALYSIS_TYPES = {
         diagnosis: {
                     id: 'diagnosis',
-                    name: '问题场景分析',
-                    prompt: '你是一个专业的表单设计专家。具有充分理解表单业务的能力，并且能结合“表单配置信息”和用户的问题描述，从参考文件中汇总分析到具体场景相关内容进行分析。找出相似的场景功能使用和问题解决方案：\n1. 首先确认匹配的描述场景\n2. 分析场景功能的使用方法和操作建议\n3. 提供指定性建议\n请用简洁易懂的中文回答。'
+                    name: '场景分析',
+                    prompt: '你是一个专业的表单设计专家。具有充分理解表单业务的能力，并且能结合用户的问题描述，从参考文件中汇总分析得到具体场景相关内容。如果临时参考文件数据和问题描述无关，直接忽略。找出相似的场景功能使用和问题解决方案：\n1. 首先确认匹配的描述场景\n2. 分析场景功能的使用方法和操作建议\n3. 提供指定性建议\n请用简洁易懂的中文回答。'
                 },
         overview: {
             id: 'overview',
@@ -108,7 +108,7 @@
         },
         jira: {
             id: 'jira',
-            name: 'Jira问题分析',
+            name: 'Jira定位分析',
             prompt: '你是一个专业的Jira问题分析专家。请结合以下业务数据和Jira工单信息。并且进行参考文件分析汇总：\n1. 分析业务问题与Jira工单的关联\n2. 根据参考文献相似场景描述给出汇总建议\n3. 提供正确的场景问题功能方案设计和使用思路\n4. 给出相关的结论\n请用简洁易懂的中文回答。'
         }
     };
@@ -131,12 +131,15 @@
     }
 
     function handleAIAnalyzeClick() {
-        if (!currentParams) {
+        const analysisType = getAIAnalysisTypeValue();
+        const isExemptAnalysis = isExemptFromCoreDataCheck(analysisType);
+
+        if (!currentParams && !isExemptAnalysis) {
             showToast('请先加载业务数据', 'error');
             return;
         }
 
-        if (!hasCoreBusinessDataReady()) {
+        if (!isExemptAnalysis && !hasCoreBusinessDataReady()) {
             if (elements.panels.aiAnalysis) {
                 elements.panels.aiAnalysis.innerHTML = renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
             }
@@ -153,7 +156,7 @@
             return;
         }
 
-        if (!buildAnalysisContextFileList().length) {
+        if (!isExemptAnalysis && !buildAnalysisContextFileList().length) {
             showToast('分析上下文文件尚未生成，请先重新加载相关页签数据', 'error');
             return;
         }
@@ -186,14 +189,15 @@
             showToast('AI分析失败: ' + error.message, 'error');
         }).finally(() => {
             if (elements.aiAnalyzeBtn) {
-                syncAIAnalyzeButtonState(hasCoreBusinessDataReady());
+                syncAIAnalyzeButtonState();
                 elements.aiAnalyzeBtn.textContent = '开始分析';
             }
         });
     }
 
     async function analyzeWithLLM(payload, endpoint) {
-        const submitResponse = await fetch(endpoint || '/api/llm/analyze', {
+        const submitUrl = buildLocalProxyUrl(endpoint || '/api/llm/analyze');
+        const submitResponse = await fetch(submitUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -214,7 +218,8 @@
         while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, pollInterval));
 
-            const statusResponse = await fetch(`/api/llm/analyze/status/${taskId}`);
+            const statusUrl = buildLocalProxyUrl(`/api/llm/analyze/status/${taskId}`);
+            const statusResponse = await fetch(statusUrl);
             const statusResult = await statusResponse.json();
 
             if (statusResult.data.status === 'completed') {
@@ -249,9 +254,22 @@
         return AI_ANALYSIS_TYPES[analysisType] ? analysisType : 'diagnosis';
     }
 
+    function isExemptFromCoreDataCheck(analysisType) {
+        return analysisType === AI_ANALYSIS_TYPES.diagnosis.id;
+    }
+
+    function canRunSelectedAIAnalysis() {
+        const analysisType = getAIAnalysisTypeValue();
+        if (isExemptFromCoreDataCheck(analysisType)) {
+            return true;
+        }
+        return hasCoreBusinessDataReady();
+    }
+
     function buildAIAnalysisRequestPayload(problemDescription) {
         const analysisType = getAIAnalysisTypeValue();
         const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
+        const isReferenceOnlyAnalysis = isExemptFromCoreDataCheck(analysisType);
 
         return {
             mode: 'jira_problem_analysis',
@@ -262,10 +280,12 @@
             tabStatus: currentAnalysisContext && currentAnalysisContext.tabStatus ? Object.assign({}, currentAnalysisContext.tabStatus) : {},
             analysisContext: {
                 sessionId: analysisSessionId,
-                files: buildAnalysisContextFileList(),
+                files: isReferenceOnlyAnalysis ? [] : buildAnalysisContextFileList(),
                 guideFileName: AI_ANALYSIS_DATA_GUIDE_NAME,
-                guidePath: resolveAnalysisGuidePath(),
-                instruction: '各页签原始 JSON 数据已写入 files 中列出的本地文件。请根据 guidePath 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
+                guideRef: isReferenceOnlyAnalysis ? '' : resolveAnalysisGuideRef(),
+                instruction: isReferenceOnlyAnalysis
+                    ? '当前分析类型为场景分析。不要分析业务数据，不要依赖临时文件中的各页签 JSON，请直接根据用户问题和 references 参考文件内容进行场景匹配、功能说明与方案建议。'
+                    : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
             },
             generatedAt: new Date().toISOString()
         };
@@ -275,9 +295,9 @@
         return Object.keys(analysisContextFiles).sort().map((tabKey) => Object.assign({}, analysisContextFiles[tabKey]));
     }
 
-    function resolveAnalysisGuidePath() {
-        const anyFile = Object.values(analysisContextFiles).find((item) => item && item.guidePath);
-        return anyFile ? anyFile.guidePath : AI_ANALYSIS_DATA_GUIDE_NAME;
+    function resolveAnalysisGuideRef() {
+        const anyFile = Object.values(analysisContextFiles).find((item) => item && item.guideRef);
+        return anyFile ? anyFile.guideRef : `assets/${AI_ANALYSIS_DATA_GUIDE_NAME}`;
     }
 
     function buildAIAnalysisContextSnapshot() {
@@ -550,6 +570,15 @@
         if (elements.aiAnalyzeBtn) {
             elements.aiAnalyzeBtn.addEventListener('click', handleAIAnalyzeClick);
         }
+        const aiAnalysisTypeSelect = document.getElementById('aiAnalysisType');
+        if (aiAnalysisTypeSelect) {
+            aiAnalysisTypeSelect.addEventListener('change', function() {
+                syncAIAnalyzeButtonState();
+                if (elements.panels.aiAnalysis) {
+                    elements.panels.aiAnalysis.innerHTML = renderCurrentAIAnalysisPanelState();
+                }
+            });
+        }
 
         if (elements.aiProblemDescriptionInput) {
             elements.aiProblemDescriptionInput.addEventListener('input', () => {
@@ -668,14 +697,14 @@
             });
             await Promise.allSettled(analysisSaveTasks);
 
-            syncAIAnalyzeButtonState(successCount === PRIMARY_TAB_KEYS.length);
+            syncAIAnalyzeButtonState();
         } else {
             runtimeContext.shared.businessLogData = buildMockTabData('businessLog', params);
             runtimeContext.shared.businessLogRaw = runtimeContext.shared.businessLogData;
             renderCoreTabsDependencyState();
             elements.panels.businessLog.innerHTML = renderTabValue('businessLog', runtimeContext.shared.businessLogData);
-            elements.panels.aiAnalysis.innerHTML = renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
-            syncAIAnalyzeButtonState(false);
+            elements.panels.aiAnalysis.innerHTML = renderCurrentAIAnalysisPanelState();
+            syncAIAnalyzeButtonState();
         }
 
         updateAnalysisContext(params, runtimeContext, { coreReady: canLoadCoreTabs });
@@ -1338,11 +1367,8 @@
     }
 
     function handleJiraCookieInput() {
-        const normalizedCookie = normalizeJiraCookieValue(elements.jiraCookieInput ? elements.jiraCookieInput.value : '');
-        if (elements.jiraCookieInput && elements.jiraCookieInput.value !== normalizedCookie) {
-            elements.jiraCookieInput.value = normalizedCookie;
-        }
-        saveJiraCookieToStorage(normalizedCookie);
+        const rawCookie = elements.jiraCookieInput ? elements.jiraCookieInput.value : '';
+        sessionStorage.setItem(JIRA_COOKIE_STORAGE_KEY, rawCookie);
     }
 
     async function handleJiraLoadClick() {
@@ -1428,11 +1454,11 @@
     }
 
     function saveJiraCookieToStorage(value) {
-        sessionStorage.setItem(JIRA_COOKIE_STORAGE_KEY, normalizeJiraCookieValue(value));
+        sessionStorage.setItem(JIRA_COOKIE_STORAGE_KEY, value == null ? '' : String(value));
     }
 
     function loadJiraCookieFromStorage() {
-        return normalizeJiraCookieValue(sessionStorage.getItem(JIRA_COOKIE_STORAGE_KEY) || '');
+        return sessionStorage.getItem(JIRA_COOKIE_STORAGE_KEY) || '';
     }
 
     function clearJiraCookieFromStorage() {
@@ -3044,7 +3070,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
             if (tabKey === AI_ANALYSIS_TAB_KEY) {
                 elements.panels[tabKey].innerHTML = canLoadCoreTabs
                     ? renderAIAnalysisIdleState()
-                    : renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
+                    : renderCurrentAIAnalysisPanelState();
                 return;
             }
 
@@ -3057,6 +3083,12 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
             <div class="ai-analysis-placeholder">
                 <p>选择分析类型并描述问题后，点击"开始分析"按钮使用AI分析业务数据</p>
             </div>`;
+    }
+
+    function renderCurrentAIAnalysisPanelState() {
+        return canRunSelectedAIAnalysis()
+            ? renderAIAnalysisIdleState()
+            : renderDependencyBlock('AI智能分析依赖表单、单据、审批等核心业务数据，请先补充参数并加载核心页签');
     }
 
     function renderErrorBlock(error) {
@@ -3490,8 +3522,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
             analysisContextFiles[tabKey] = {
                 tabKey: tabKey,
                 description: description,
-                filePath: result.data.filePath,
-                guidePath: result.data.guidePath,
+                fileName: result.data.fileName || `${tabKey}.json`,
+                fileRef: result.data.fileRef,
+                guideRef: result.data.guideRef,
                 updatedAt: new Date().toISOString()
             };
             return analysisContextFiles[tabKey];
@@ -3933,6 +3966,9 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
             return;
         }
 
+        if (typeof enabled !== 'boolean') {
+            enabled = canRunSelectedAIAnalysis();
+        }
         elements.aiAnalyzeBtn.disabled = !enabled;
         elements.aiAnalyzeBtn.title = enabled ? '' : '请先补充表单参数并加载核心页签';
     }
@@ -4337,8 +4373,33 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
     }
 
     function normalizeJiraCookieValue(value) {
-        const normalized = String(value || '').trim();
-        return normalized.replace(/^cookie\s*:\s*/i, '').trim();
+        const normalized = String(value || '')
+            .replace(/^cookie\s*:\s*/i, '')
+            .replace(/[\r\n\t]+/g, ' ')
+            .trim();
+
+        if (!normalized) {
+            return '';
+        }
+
+        const segments = [];
+        normalized.split(';').forEach((part) => {
+            const item = part.trim();
+            if (!item || item.indexOf('=') === -1) {
+                return;
+            }
+
+            const separatorIndex = item.indexOf('=');
+            const name = item.slice(0, separatorIndex).trim();
+            const cookieValue = item.slice(separatorIndex + 1).trim();
+            if (!name || !cookieValue) {
+                return;
+            }
+
+            segments.push(`${name}=${cookieValue}`);
+        });
+
+        return segments.join('; ');
     }
 
     function normalizeWhitespace(value) {

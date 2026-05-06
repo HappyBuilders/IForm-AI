@@ -1,0 +1,32 @@
+{
+  "document": {
+    "tabKey": "document",
+    "description": "单据数据信息页签：getFormData 接口返回的原始 JSON 数据。",
+    "filePath": "E:\\CLAUDE_IFORM_AI\\IForm-AI\\.tmp\\analysis\\detail-1778037900692-j39xi4ry\\document.json",
+    "updatedAt": 1778037901628
+  },
+  "approval": {
+    "tabKey": "approval",
+    "description": "流程审批信息页签：loadDataJson 接口返回的原始 JSON 数据。",
+    "filePath": "E:\\CLAUDE_IFORM_AI\\IForm-AI\\.tmp\\analysis\\detail-1778037900692-j39xi4ry\\approval.json",
+    "updatedAt": 1778037904893
+  },
+  "formConfig": {
+    "tabKey": "formConfig",
+    "description": "表单配置信息页签：billVue.json 接口返回的原始 JSON 数据。",
+    "filePath": "E:\\CLAUDE_IFORM_AI\\IForm-AI\\.tmp\\analysis\\detail-1778037900692-j39xi4ry\\formConfig.json",
+    "updatedAt": 1778037905194
+  },
+  "businessLog": {
+    "tabKey": "businessLog",
+    "description": "业务日志页签：当前页面用于分析的业务日志 JSON 数据。",
+    "filePath": "E:\\CLAUDE_IFORM_AI\\IForm-AI\\.tmp\\analysis\\detail-1778037900692-j39xi4ry\\businessLog.json",
+    "updatedAt": 1778037905508
+  },
+  "jiraIssueTable": {
+    "tabKey": "jiraIssueTable",
+    "description": "Jira问题分析页签：/rest/issueNav/1/issueTable 接口返回的原始 JSON 数据。",
+    "filePath": "E:\\CLAUDE_IFORM_AI\\IForm-AI\\.tmp\\analysis\\detail-1778037900692-j39xi4ry\\jiraIssueTable.json",
+    "updatedAt": 1778037943081
+  }
+}

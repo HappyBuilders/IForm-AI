@@ -1,13 +1,13 @@
 ---
 name: iform-ai
-description: IForm-AI H5业务系统 - 用于调用现有业务系统接口的智能表单系统。支持参数配置(ytenant_id, pkBo, pkBoins)并展示业务数据。适用于移动端H5页面开发。
+description: IForm-AI H5业务系统,表单业务 - 用于调用现有业务系统接口的智能分析表单系统。支持各环境参数配置(ytenant_id, pkBo, pkBoins)并展示业务数据，工单问题定位分析。
 ---
 
 # IForm-AI H5业务系统
 
 ## 概述
 
-IForm-AI是一个基于H5的移动优先业务系统前端，用于连接现有业务系统API，提供参数输入界面和数据展示功能。
+IForm-AI 是一个基于H5的优先业务系统,基表单业务系统的前端服务，用于连接现有业务系统API，提供排查问题参数输入界面和数据展示及问题定位分析功能。
 
 ## 核心功能
 
@@ -67,31 +67,29 @@ IForm-AI/
 python scripts/proxy-server.py
 ```
 
-然后访问：`http://localhost:8080/templates/index.html`
+启动说明：
+
+1. 服务启动前会自动执行 `python scripts/update-config.py`。
+2. `update-config.py` 会优先从本机 YonClaw Gateway 同步当前智能体配置，并更新 `assets/static/config/runtime-config.json` 中的 `yonclaw` 节点。
+3. 如果 Gateway 暂时不可用，则保留当前 `runtime-config.json` 配置继续启动。
+
+如需手动更新配置，也可以先单独执行：
+
+
+```bash
+# 在项目根目录执行
+python scripts/update-config.py
+python scripts/proxy-server.py
+```
+
+
+然后访问：`http://localhost:18080/templates/index.html`
 
 **代理功能说明**：
 - 所有API请求自动通过代理转发
 - 支持测试/日常/预发/核心1-4等环境
 - 自动添加CORS响应头
 - 支持 `yht_access_token` 授权头透传
-
-### 方式2：直接打开HTML文件
-
-在浏览器中打开 `assets/templates/index.html` 即可使用。
-
-**注意**：直接打开会遇到跨域问题，详情页无法调用真实接口，只能使用Mock数据。
-
-### 方式3：部署到Web服务器
-
-将 `assets/` 目录部署到与业务系统同域的服务器：
-
-```bash
-# 使用Python简单HTTP服务器（无代理功能）
-cd assets && python -m http.server 8080
-
-# 或使用Node.js http-server
-npx http-server assets -p 8080
-```
 
 ## API接口规范
 
@@ -170,7 +168,7 @@ python scripts/proxy-server.py
 
 ### 2. 访问首页
 
-浏览器打开：`http://localhost:8080/templates/index.html`
+浏览器打开：`http://localhost:18080/templates/index.html`
 
 ### 3. 输入参数
 
@@ -190,7 +188,7 @@ python scripts/proxy-server.py
 ### 能力说明
 
 - **无需启动H5服务** - 直接对话即可使用
-- **自动读取参考文档** - 自动扫描 `references` 文件夹中的所有文档
+- **按索引调度参考文档** - 先根据 `references` 目录结构和关键词入口定位，再按需加载命中文档分片
 - **专业表单设计专家** - 理解表单业务，能从文档中找到相似场景
 - **问题诊断与解决方案** - 结合问题描述给出具体解决方案
 
@@ -211,22 +209,38 @@ skill根目录/references/  （任意层级、任意子目录）
 
 支持的文件：
 - 所有 `.md` 格式的文档
-- 任意层级的子目录都会自动扫描
+- 任意层级的子目录都可作为关键词索引入口
 
 示例：
 ```
 references/
-├── api/
-│   └── xxx.md
-├── models/
-│   └── yyy.md
-├── workflow/
-│   └── sub/
-│       └── zzz.md
+├── forms/
+│   └── 对公付款申请单/
+│       └── 提交校验.md
+├── troubleshooting/
+│   └── 审批流/
+│       └── 节点不流转.md
 └── readme.md
 ```
 
-我会自动读取这些文档，结合你的问题给出专业的回答。
+使用规则：
+
+1. 不要一次性扫描整个 `references`。
+2. 将 `references/` 目录结构本身视为“问题分类索引”与“关键词入口”。
+3. 优先根据一级目录定位大类：
+   - `references/forms/`: 表单操作说明文档
+   - `references/troubleshooting/`: 问题排查文档
+4. 再根据里层每一级目录名、文件名提取关键词，筛选最相关的少量文档。
+5. 对命中文档按内容分片，只加载与当前问题最相关的片段。
+6. 已读取过的索引和文档片段优先复用缓存，避免重复加载。
+
+分析流程：
+
+1. 先看目录索引，不全量读文档。
+2. 从用户问题中提取业务词、异常词、模块词、表单名。
+3. 用这些关键词去匹配目录名和文件名。
+4. 仅在命中后读取对应文档内容，并优先读取相关分片。
+5. 若证据不足，再逐步扩大到相邻目录，不允许直接全库扫描。
 
 ---
 
