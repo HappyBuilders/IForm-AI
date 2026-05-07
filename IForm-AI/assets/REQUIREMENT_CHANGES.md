@@ -542,3 +542,76 @@
 3. `scripts/proxy-server.py`
 4. `assets/AI_ANALYSIS_DATA_GUIDE.md`
 5. `assets/REQUIREMENT_CHANGES.md`
+
+## 2026-05-07 AI分析模式、配置同步与路径相对化维护
+
+### 变更背景
+
+近期围绕 `AI智能分析`、本地代理启动链路、以及 skill 安装后的跨环境适配，连续做了多项行为调整。如果这些变化只停留在代码层，会导致后续维护时难以判断：
+
+1. 大模型到底读取的是当前 skill 执行路径下的资源，还是开发目录或某个固定 profile 路径。
+2. `runtime-config.json` 在启动前被 `update-config.py` 更新后，当前进程是否真的使用了更新后的 `yonclaw` 配置。
+3. `AI智能分析` 的不同分析类型，哪些依赖业务数据，哪些应直接基于参考文件进行场景分析。
+4. 模型会话中看到的大量参数，究竟来自临时文件，还是来自额外拼接进 prompt 的结构化上下文。
+
+因此本次需要把上述实现收敛为清晰的需求口径并同步到文档。
+
+### 本次变更
+
+1. `references` 读取策略改为“当前执行 skill 根目录优先”，不再依赖固定 profile 目录。
+2. `references` 的使用方式统一收敛为：
+   - 先基于目录结构建立索引；
+   - 再按目录名、子目录名、文件名中的关键词做命中；
+   - 最后按需加载文档分片，不允许一次性扫描全部参考文档。
+3. `update-config.py` 被纳入启动链路：
+   - `python scripts/proxy-server.py`
+   - `python scripts/start-server.py`
+   启动前都会自动执行配置更新。
+4. `update-config.py` 执行成功后，`proxy-server.py` 必须立即重新加载 `runtime-config.json`，使进程内 `RUNTIME_CONFIG` 与最新文件内容保持一致。
+5. 配置更新与启动日志中不得输出敏感信息，不允许回显：
+   - `gatewayUrl`
+   - `gatewayToken`
+   - `model`
+   - 本地敏感路径或异常明细
+6. `.tmp/analysis/{sessionId}/` 相关上下文文件、`manifest.json`、以及前后端传递的分析上下文引用，统一改为相对当前 skill 根目录的稳定相对路径，不再返回或持久化绝对路径。
+7. 旧格式 `manifest.json` 中如果仍残留 `filePath` 绝对路径，代理在后续读取时必须自动迁移为：
+   - `fileName`
+   - `fileRef`
+8. `AI智能分析` 的提示词改为极简 prompt 模式，不再在会话中整块注入：
+   - `fieldExplanations`
+   - `referenceDocs`
+   - 大量冗余业务参数
+9. 极简 prompt 默认只保留：
+   - `problemDescription`
+   - `analysisType`
+   - `analysisTypeName`
+   - 最小必要参数摘要
+   - 最小 `analysisContext`
+10. `AI智能分析` 的分析类型当前收敛为三类：
+    - `场景分析`
+    - `数据分析`
+    - `Jira定位分析`
+11. `场景分析` 为纯参考文件分析模式，必须满足以下约束：
+    - 不拦截核心业务参数；
+    - 不依赖 `.tmp/analysis` 临时文件中的各页签业务 JSON；
+    - 不把业务数据作为分析依据；
+    - 仅根据用户问题和 `references` 命中的参考文件分片进行场景匹配、功能说明和方案建议。
+12. `数据分析` 与 `Jira定位分析` 仍保留核心业务数据依赖：
+    - 需要核心业务页签上下文；
+    - 需要临时文件中的业务数据引用；
+    - 结果区和按钮状态都继续遵守核心参数校验。
+13. `AI智能分析` 结果区占位文案必须与当前分析类型联动：
+    - 对 `场景分析` 不显示“待补充参数”依赖提示；
+    - 对其它依赖业务数据的分析类型，继续显示依赖提示。
+14. `Jira问题分析` 页签中的 `相似场景工单解析` 调用模型时，继续使用 `runtime-config.json` 中 `yonclaw` 节点的配置，但前提是该配置已经在启动期自动同步并重新加载到内存。
+
+### 涉及文件
+
+1. `scripts/proxy-server.py`
+2. `scripts/start-server.py`
+3. `scripts/update-config.py`
+4. `assets/static/js/detail.js`
+5. `assets/templates/detail.html`
+6. `assets/AI_ANALYSIS_DATA_GUIDE.md`
+7. `SKILL.md`
+8. `assets/REQUIREMENT_CHANGES.md`

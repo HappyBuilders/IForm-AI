@@ -665,3 +665,47 @@ window.IFormDetailConfig = {
 
 1. Entering the detail page through `快捷分析Jira` must not be blocked by a missing `Jira工单号`.
 2. Any Jira-specific required-field interception should happen inside the `Jira问题分析` tab when users perform the concrete Jira loading action.
+
+## 16. Current Effective Requirement Updates On 2026-05-07
+
+### 16.1 Runtime Config Refresh Rules
+
+1. `scripts/proxy-server.py` and `scripts/start-server.py` must execute `scripts/update-config.py` before starting their main service loop.
+2. After `update-config.py` completes successfully, `scripts/proxy-server.py` must reload `assets/static/config/runtime-config.json` into the in-process `RUNTIME_CONFIG`.
+3. Startup logs and config-refresh logs must not expose sensitive values such as `gatewayUrl`, `gatewayToken`, or concrete token fragments.
+
+### 16.2 Skill Path And Relative Context Rules
+
+1. The active skill execution root is the primary base path for references and temporary analysis context.
+2. `references` lookup must prefer the current executing skill path rather than any hard-coded development path or a fixed YonClaw profile id.
+3. Analysis context references, guide references, and manifest entries must use stable paths relative to the current skill root.
+4. New `manifest.json` entries must use `fileName` plus `fileRef` and must not persist absolute `filePath` values.
+5. Legacy manifest files that still contain absolute `filePath` must be normalized when rewritten.
+
+### 16.3 AI Analysis Prompt Minimization Rules
+
+1. `AI智能分析` prompt construction must follow a minimal-context strategy.
+2. The model request must no longer inline large helper payloads such as `fieldExplanations` or pre-expanded `referenceDocs`.
+3. The prompt should keep only the minimal structured metadata required to identify the analysis type, the problem description, and the analysis context references.
+4. Large business payloads should be referenced through local analysis context files only when the selected analysis type actually depends on them.
+
+### 16.4 AI Analysis Type Behavior Rules
+
+1. The active analysis types are:
+   - `场景分析`
+   - `数据分析`
+   - `Jira定位分析`
+2. `场景分析` is a reference-only mode and must:
+   - bypass core business parameter interception;
+   - ignore temporary tab JSON files;
+   - ignore business data as an analysis basis;
+   - rely on user problem description plus matched `references` content only.
+3. `数据分析` and `Jira定位分析` must continue to depend on core business context and analysis context files.
+4. The `AI智能分析` panel placeholder and button-enabled state must follow the selected analysis type:
+   - `场景分析` should present a directly usable idle state;
+   - other analysis types should continue to show the core-data dependency message when required context is missing.
+
+### 16.5 Jira Similar Analysis Model Config Rules
+
+1. `Jira问题分析` tab's `相似场景工单解析` must continue to use the `yonclaw` section in `runtime-config.json`.
+2. The actual gateway configuration used by similar-analysis requests must reflect the latest in-memory `RUNTIME_CONFIG` after startup-time refresh.
