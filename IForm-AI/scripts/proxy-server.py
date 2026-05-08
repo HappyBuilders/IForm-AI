@@ -135,9 +135,9 @@ def load_runtime_config():
             'baseUrl': ''
         },
         'yonclaw': {
-            'gatewayUrl': 'http://127.0.0.1:18789/api/agent',
+            'gatewayUrl': 'http://127.0.0.1:29179/v1/chat/completions',
             'gatewayToken': '',
-            'model': 'yonyou-default/MiniMax-M2.5',
+            'model': 'openclaw/main',
             'cliPath': ''
         }
     }
@@ -170,7 +170,7 @@ def load_runtime_config():
         config['yonclaw'] = {
             'gatewayUrl': str(yonclaw_config.get('gatewayUrl', '') or '').strip(),
             'gatewayToken': str(yonclaw_config.get('gatewayToken', '') or '').strip(),
-            'model': str(yonclaw_config.get('model', 'yonyou-default/MiniMax-M2.5') or '').strip(),
+            'model': str(yonclaw_config.get('model', 'openclaw/main') or '').strip(),
             'cliPath': str(yonclaw_config.get('cliPath', '') or '').strip()
         }
     

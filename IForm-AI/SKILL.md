@@ -70,8 +70,14 @@ python scripts/proxy-server.py
 启动说明：
 
 1. 服务启动前会自动执行 `python scripts/update-config.py`。
-2. `update-config.py` 会优先从本机 YonClaw Gateway 同步当前智能体配置，并更新 `assets/static/config/runtime-config.json` 中的 `yonclaw` 节点。
-3. 如果 Gateway 暂时不可用，则保留当前 `runtime-config.json` 配置继续启动。
+2. `update-config.py` 会自动检测并刷新 `assets/static/config/runtime-config.json` 中的 `yonclaw` 节点。
+3. `yonclaw` 配置来源优先级固定为：**环境变量 > 本机 profile 配置文件 `openclaw.json` > 现有 `runtime-config.json` > 默认值**。
+4. `gatewayUrl` 必须做规范化处理：
+   - 若已是完整的 `/v1/chat/completions` 地址，则直接保留；
+   - 若只拿到基础地址（如 `http://127.0.0.1:29179`）或 `/v1`，则自动补全为 `/v1/chat/completions`；
+   - 若值为空，则继续按优先级回退。
+5. **禁止**把本地 YonClaw Control UI 页面或 `/v1/config`、`/v1/status` 之类控制台探测地址当成最终 `gatewayUrl` 配置来源。
+6. 若环境变量、本机 profile 配置文件和现有运行时配置都不可用，才允许回退到默认值继续启动。
 
 如需手动更新配置，也可以先单独执行：
 
