@@ -4,20 +4,21 @@ IForm-AI 配置更新脚本
 在启动 H5 服务前运行，自动获取当前 YonClaw 智能体配置并更新 runtime-config.json
 """
 
+import glob
 import json
 import os
-import sys
-import urllib.request
-import urllib.error
-import urllib.parse
+from urllib.parse import urlparse, urlunparse
 
 # 配置文件路径（相对于本脚本所在目录）
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), '..', 'assets', 'static', 'config', 'runtime-config.json')
 CONFIG_FILE = os.path.normpath(CONFIG_FILE)
 
-# YonClaw 配置文件路径
-OPENCLAW_CONFIG_FILE = os.path.join(os.path.expanduser('~'), 'AppData', 'Roaming', 'yonclaw', 'profiles', 'profile-c7373b7835e20fbde372b2531d53b8e35d8f06d4cc12ff2f0da53f0475b9e856', 'userData', 'runtime', 'openclaw', 'openclaw.json')
-OPENCLAW_CONFIG_FILE = os.path.normpath(OPENCLAW_CONFIG_FILE)
+# YonClaw profiles 根目录（不要写死 profile id）
+YONCLAW_PROFILES_ROOT = os.path.join(
+    os.path.expanduser('~'),
+    'AppData', 'Roaming', 'yonclaw', 'profiles'
+)
+YONCLAW_PROFILES_ROOT = os.path.normpath(YONCLAW_PROFILES_ROOT)
 
 # 默认配置（无法获取时使用）
 DEFAULT_CONFIG = {
@@ -27,125 +28,274 @@ DEFAULT_CONFIG = {
 }
 
 
-def get_yonclaw_config_token():
-    """从 YonClaw 配置文件获取 gateway token"""
+
+def is_non_empty_string(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+
+def normalize_gateway_url(value):
+    """将 gatewayUrl 规范化为可调用的 chat completions 接口地址。"""
+    raw_url = str(value or '').strip()
+    if not raw_url:
+        return ''
+
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        return raw_url
+
+    path = (parsed.path or '').strip()
+    normalized_path = path.rstrip('/')
+
+    if not normalized_path:
+        normalized_path = '/v1/chat/completions'
+    elif normalized_path == '/v1':
+        normalized_path = '/v1/chat/completions'
+    elif normalized_path.endswith('/v1/chat/completions'):
+        normalized_path = normalized_path
+    elif normalized_path.endswith('/chat/completions'):
+        normalized_path = normalized_path
+    else:
+        normalized_path = normalized_path
+
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        normalized_path,
+        parsed.params,
+        parsed.query,
+        parsed.fragment
+    ))
+
+
+
+def sanitize_yonclaw_config(raw_config):
+    """仅保留 yonclaw 需要的字段，并统一为字符串。"""
+    raw = raw_config if isinstance(raw_config, dict) else {}
+    return {
+        "gatewayUrl": normalize_gateway_url(raw.get("gatewayUrl", "")),
+        "gatewayToken": str(raw.get("gatewayToken", "") or "").strip(),
+        "model": str(raw.get("model", "") or "").strip()
+    }
+
+
+
+def merge_configs(*configs):
+    """按顺序合并配置：后者仅在值非空时覆盖前者。"""
+    merged = {
+        "gatewayUrl": "",
+        "gatewayToken": "",
+        "model": ""
+    }
+
+    for config in configs:
+        current = sanitize_yonclaw_config(config)
+        for key, value in current.items():
+            if is_non_empty_string(value):
+                merged[key] = value
+
+    return merged
+
+
+
+def mask_sensitive_text(value):
+    text = str(value or '').strip()
+    if not text:
+        return '(空)'
+    if len(text) <= 8:
+        return '*' * len(text)
+    return f"{text[:4]}***{text[-2:]}"
+
+
+
+def read_existing_runtime_yonclaw_config():
+    """读取 runtime-config.json 里当前已有的 yonclaw 配置。"""
     try:
-        if os.path.exists(OPENCLAW_CONFIG_FILE):
-            with open(OPENCLAW_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                gateway = config.get('gateway', {})
-                auth = gateway.get('auth', {})
-                token = auth.get('token', '')
-                if token:
-                    print("✓ 已获取本机 YonClaw 认证信息")
-                    return token
+        if not os.path.exists(CONFIG_FILE):
+            return {}
+
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+        result = sanitize_yonclaw_config(config.get('yonclaw', {}))
+        if any(is_non_empty_string(v) for v in result.values()):
+            print('✓ 已读取现有 runtime-config.json 中的 yonclaw 配置')
+        return result
     except Exception:
-        print("⚠️ 读取本机 YonClaw 配置失败")
-    return None
+        print('⚠️ 读取现有 runtime-config.json 中的 yonclaw 配置失败')
+        return {}
+
+
+
+def get_yonclaw_config_candidates():
+    """自动扫描本机所有 YonClaw profile 下的 openclaw.json。"""
+    if not os.path.isdir(YONCLAW_PROFILES_ROOT):
+        return []
+
+    pattern = os.path.join(
+        YONCLAW_PROFILES_ROOT,
+        '*',
+        'userData',
+        'runtime',
+        'openclaw',
+        'openclaw.json'
+    )
+    candidates = [os.path.normpath(path) for path in glob.glob(pattern)]
+
+    # 按修改时间倒序，优先最近活跃的 profile
+    candidates.sort(key=lambda path: os.path.getmtime(path) if os.path.exists(path) else 0, reverse=True)
+    return candidates
+
+
+
+def read_yonclaw_config_file(config_path):
+    """从某个 openclaw.json 中提取 gateway 信息。"""
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+        gateway = config.get('gateway', {}) if isinstance(config, dict) else {}
+        auth = gateway.get('auth', {}) if isinstance(gateway, dict) else {}
+
+        result = {
+            'gatewayUrl': str(gateway.get('remoteUrl', '') or gateway.get('url', '') or '').strip(),
+            'gatewayToken': str(auth.get('token', '') or '').strip(),
+            'model': ''
+        }
+
+        if is_non_empty_string(result['gatewayUrl']) or is_non_empty_string(result['gatewayToken']):
+            profile_dir = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(config_path)))))
+            print(f'✓ 已从 YonClaw 配置文件读取认证信息: {profile_dir}')
+
+        return result
+    except Exception:
+        print(f'⚠️ 读取 YonClaw 配置文件失败: {config_path}')
+        return {}
+
+
+
+def get_yonclaw_config_from_files():
+    """从自动发现的 YonClaw 配置文件中读取可用配置。"""
+    candidates = get_yonclaw_config_candidates()
+    if not candidates:
+        print('⚠️ 未发现可用的 YonClaw profile 配置文件')
+        return {}
+
+    merged = {}
+    for config_path in candidates:
+        merged = merge_configs(merged, read_yonclaw_config_file(config_path))
+        if is_non_empty_string(merged.get('gatewayToken')):
+            break
+
+    return merged
+
+
+
+def build_gateway_url_from_env():
+    """优先从显式 URL 读取；否则根据 OPENCLAW_GATEWAY_PORT 组装本地 Gateway URL。"""
+    explicit_url = str(os.environ.get('YONCLAW_GATEWAY_URL', '') or '').strip()
+    if explicit_url:
+        return normalize_gateway_url(explicit_url)
+
+    gateway_port = str(os.environ.get('OPENCLAW_GATEWAY_PORT', '') or '').strip()
+    if gateway_port:
+        return normalize_gateway_url(f'http://127.0.0.1:{gateway_port}/v1/chat/completions')
+
+    return ''
+
+
+
+def get_gateway_config_from_env():
+    """从环境变量获取运行时配置。"""
+    result = {
+        'gatewayUrl': build_gateway_url_from_env(),
+        'gatewayToken': str(
+            os.environ.get('YONCLAW_GATEWAY_TOKEN', '')
+            or os.environ.get('OPENCLAW_GATEWAY_TOKEN', '')
+            or ''
+        ).strip(),
+        'model': os.environ.get('YONCLAW_MODEL', '')
+    }
+    if any(is_non_empty_string(v) for v in result.values()):
+        print('✓ 已从环境变量读取运行时配置')
+    else:
+        print('⚠️ 环境变量中未提供 YonClaw 运行时配置')
+    return sanitize_yonclaw_config(result)
+
 
 
 def get_gateway_config():
-    """从 YonClaw Gateway 获取当前智能体配置"""
-    
-    # 尝试从本地 Gateway 获取配置
-    gateway_url = "http://127.0.0.1:29179/v1/config"
-    
-    try:
-        req = urllib.request.Request(gateway_url)
-        req.add_header('Accept', 'application/json')
-        
-        with urllib.request.urlopen(req, timeout=3) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            return {
-                "gatewayUrl": data.get("gatewayUrl", DEFAULT_CONFIG["gatewayUrl"]),
-                "gatewayToken": data.get("gatewayToken", DEFAULT_CONFIG["gatewayToken"]),
-                "model": data.get("model", DEFAULT_CONFIG["model"])
-            }
-    except Exception:
-        print("⚠️ 无法从 Gateway 获取配置")
-    
-    # 尝试从 YonClaw 配置文件获取 token
-    yonclaw_token = get_yonclaw_config_token()
-    
-    # 尝试从环境变量获取
-    config = {
-        "gatewayUrl": os.environ.get("YONCLAW_GATEWAY_URL", DEFAULT_CONFIG["gatewayUrl"]),
-        "gatewayToken": os.environ.get("YONCLAW_GATEWAY_TOKEN", yonclaw_token or DEFAULT_CONFIG["gatewayToken"]),
-        "model": os.environ.get("YONCLAW_MODEL", DEFAULT_CONFIG["model"])
-    }
-    
-    if config["gatewayToken"]:
-        print("✓ 已获取运行时配置")
-        return config
-    
-    # 尝试从当前进程获取（YonClaw 内运行时有此变量）
-    if hasattr(sys, 'yonclaw_config'):
-        return sys.yonclaw_config
-    
-    print("⚠️ 未获取到完整运行时配置，将使用默认本地调试配置")
-    return DEFAULT_CONFIG
+    """按固定优先级组装 yonclaw 配置。
 
+    优先级（高 -> 低）：
+    1. 环境变量
+    2. 本机 profile 配置文件 openclaw.json
+    3. 现有 runtime-config.json
+    4. 默认值
+    """
+    env_config = get_gateway_config_from_env()
+    file_config = get_yonclaw_config_from_files()
+    existing_config = read_existing_runtime_yonclaw_config()
 
-def check_gateway_status():
-    """检查 Gateway 是否可用"""
-    try:
-        req = urllib.request.Request("http://127.0.0.1:29179/v1/status")
-        req.add_header('Accept', 'application/json')
-        with urllib.request.urlopen(req, timeout=2):
-            return True
-    except:
-        return False
+    merged = merge_configs(
+        DEFAULT_CONFIG,
+        existing_config,
+        file_config,
+        env_config
+    )
+
+    if is_non_empty_string(merged.get('gatewayToken')):
+        print('✓ 已按优先级生成可用的 YonClaw 运行时配置')
+    else:
+        print('⚠️ 未获取到完整运行时配置，将保留默认值或现有值')
+
+    return merged
+
 
 
 def update_runtime_config(yonclaw_config):
-    """更新 runtime-config.json 中的 yonclaw 节点"""
-    
-    # 读取现有配置
+    """更新 runtime-config.json 中的 yonclaw 节点，避免被空值覆盖。"""
     if not os.path.exists(CONFIG_FILE):
-        print("❌ 运行时配置文件不存在")
+        print('❌ 运行时配置文件不存在')
         return False
-    
+
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         config = json.load(f)
-    
-    # 更新 yonclaw 节点
-    config['yonclaw'] = yonclaw_config
-    
-    # 写回配置
+
+    existing_yonclaw = sanitize_yonclaw_config(config.get('yonclaw', {}))
+    next_yonclaw = merge_configs(DEFAULT_CONFIG, existing_yonclaw, yonclaw_config)
+    config['yonclaw'] = next_yonclaw
+
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
-    
-    print("✓ 运行时配置已更新")
-    
+        f.write('\n')
+
+    print('✓ 运行时配置已更新')
+    print(f"  - gatewayUrl: {'已配置' if is_non_empty_string(next_yonclaw.get('gatewayUrl')) else '未配置'}")
+    print(f"  - gatewayToken: {mask_sensitive_text(next_yonclaw.get('gatewayToken'))}")
+    print(f"  - model: {next_yonclaw.get('model') or '(空)'}")
     return True
+
 
 
 def main():
     """主函数"""
-    print("=" * 50)
-    print("🔄 IForm-AI 配置更新工具")
-    print("=" * 50)
-    
-    # 检查 Gateway 状态
-    gateway_online = check_gateway_status()
-    if gateway_online:
-        print("✓ Gateway 在线")
-    else:
-        print("⚠️ Gateway 离线，将使用本地配置")
-    
-    # 获取配置
-    print("\n📥 获取 YonClaw 配置...")
+    print('=' * 50)
+    print('🔄 IForm-AI 配置更新工具')
+    print('=' * 50)
+    print('ℹ️ 当前配置来源优先级：环境变量 > 本机 profile 配置文件 > 现有 runtime-config.json > 默认值')
+
+    print('\n📥 获取 YonClaw 配置...')
     yonclaw_config = get_gateway_config()
-    
-    # 更新配置
-    print("\n💾 更新 runtime-config.json...")
+
+    print('\n💾 更新 runtime-config.json...')
     success = update_runtime_config(yonclaw_config)
-    
+
     if success:
-        print("\n✅ 配置更新完成！可以启动 H5 服务了。")
+        print('\n✅ 配置更新完成！可以启动 H5 服务了。')
     else:
-        print("\n❌ 配置更新失败")
-        sys.exit(1)
+        print('\n❌ 配置更新失败')
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
