@@ -58,8 +58,8 @@
     "baseUrl": "https://gfjira.yyrd.com/"
   },
   "yonclaw": {
-    "gatewayUrl": "http://127.0.0.1:29179/v1/chat/completions",
-    "gatewayToken": "yonclaw-ba120c47ee2dc75f770f3d4a207d008c",
+    "gatewayUrl": "",
+    "gatewayToken": "",
     "model": "openclaw/main"
   }
 }
