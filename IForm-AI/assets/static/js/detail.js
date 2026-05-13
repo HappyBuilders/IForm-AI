@@ -378,6 +378,11 @@
     function updateAnalysisContext(params, runtimeContext, options) {
         const shared = runtimeContext && runtimeContext.shared ? runtimeContext.shared : {};
         const baseContext = currentAnalysisContext || {};
+        const existingTabs = baseContext.tabs || {};
+        const existingFormConfigSummary = existingTabs.formConfig && existingTabs.formConfig.normalized || null;
+        const existingDocumentSummary = existingTabs.document && existingTabs.document.normalized || null;
+        const existingApprovalSummary = existingTabs.approval && existingTabs.approval.normalized || null;
+        const existingBusinessLogSummary = existingTabs.businessLog && existingTabs.businessLog.normalized || null;
         const nextContext = {
             params: sanitizeParamsForAI(params || currentParams || {}),
             tabStatus: {
@@ -389,19 +394,19 @@
             },
             tabs: {
                 formConfig: {
-                    normalized: summarizeFormConfigForAI(shared.formConfigRenderData || (baseContext.tabs && baseContext.tabs.formConfig ? baseContext.tabs.formConfig.normalized : null)),
+                    normalized: shared.formConfigRenderData ? summarizeFormConfigForAI(shared.formConfigRenderData) : (existingFormConfigSummary || {}),
                     notes: ['formConfig 描述表单模板结构、字段配置、布局与子表定义。']
                 },
                 document: {
-                    normalized: summarizeDocumentForAI(shared.documentParsed || (baseContext.tabs && baseContext.tabs.document ? baseContext.tabs.document.normalized : null)),
+                    normalized: shared.documentRenderData ? summarizeDocumentForAI(shared.documentRenderData) : (existingDocumentSummary || {}),
                     notes: ['document 描述当前单据实例数据、主表/子表字段值与流程相关标识。']
                 },
                 approval: {
-                    normalized: summarizeApprovalForAI(shared.approvalRenderData || (baseContext.tabs && baseContext.tabs.approval ? baseContext.tabs.approval.normalized : null)),
+                    normalized: shared.approvalRenderData ? summarizeApprovalForAI(shared.approvalRenderData) : (existingApprovalSummary || {}),
                     notes: ['approval 描述流程审批节点、处理人、处理意见、流转状态与时序信息。']
                 },
                 businessLog: {
-                    normalized: summarizeBusinessLogForAI(shared.businessLogData || (baseContext.tabs && baseContext.tabs.businessLog ? baseContext.tabs.businessLog.normalized : null)),
+                    normalized: shared.businessLogData ? summarizeBusinessLogForAI(shared.businessLogData) : (existingBusinessLogSummary || {}),
                     notes: ['businessLog 描述业务日志、调用链、模块、耗时与异常线索。']
                 }
             }
@@ -500,10 +505,10 @@
 
     function buildCompactDataAnalysisSnapshot() {
         const tabs = currentAnalysisContext && currentAnalysisContext.tabs ? currentAnalysisContext.tabs : {};
-        const formConfigSummary = summarizeFormConfigForAI(tabs.formConfig && tabs.formConfig.normalized);
-        const documentSummary = summarizeDocumentForAI(tabs.document && tabs.document.normalized);
-        const approvalSummary = summarizeApprovalForAI(tabs.approval && tabs.approval.normalized);
-        const businessLogSummary = summarizeBusinessLogForAI(tabs.businessLog && tabs.businessLog.normalized);
+        const formConfigSummary = tabs.formConfig && tabs.formConfig.normalized || {};
+        const documentSummary = tabs.document && tabs.document.normalized || {};
+        const approvalSummary = tabs.approval && tabs.approval.normalized || {};
+        const businessLogSummary = tabs.businessLog && tabs.businessLog.normalized || {};
 
         return sanitizeDataForAI({
             meta: {
@@ -5112,4 +5117,5 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
         init();
     }
 })();
+
 
