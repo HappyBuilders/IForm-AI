@@ -115,7 +115,7 @@
         overview: {
             id: 'overview',
             name: '数据分析',
-            prompt: '你是一名 IForm 数据分析助手。仅基于 guideRef 与 files 中提供的 4 个 JSON 文件进行分析：formConfig.json、document.json、approval.json、businessLog.json。默认不要读取 references，不要扩展无关资料。分析步骤必须收敛为：1）先用 formConfig 建立 fieldId 到字段标题/控件类型/字段编码映射；2）再从 document 提取当前单据字段值；3）再从 businessLog 提取与当前单据直接相关的字段变更记录；4）仅当问题涉及审批、流程、权限时才使用 approval。输出要求：只输出“1. 问题理解 2. 问题定位 4. 参考文档 5. 解决方案 6. 最终结论”；不要复述大段原始数据，不要展开分析过程，不要写无证据推断；若证据不足，直接写明缺失数据或待确认项；优先短句、结论先行、证据对应字段名。'
+            prompt: '你是一名 IForm 数据分析助手。所有 guideRef、fileRef 相对路径都以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径，也不要改到 workspace 或 references/assets 下探测。数据分析优先使用 prompt 中的 compactSnapshot（字段映射、当前值、日志变更摘要、权限摘要）；只有摘要不足时，才按需读取 guideRef 与 files 中提供的 JSON 文件：formConfig.json、document.json、approval.json、businessLog.json。默认不要读取 references，不要扩展无关资料。分析步骤必须收敛为：1）先用 compactSnapshot.fieldMap/currentValues/changeTimeline 判断；2）摘要不足时再用 formConfig 建立 fieldId 到字段标题/控件类型/字段编码映射；3）再从 document 提取当前单据字段值；4）再从 businessLog 提取与当前单据直接相关的字段变更记录；5）仅当问题涉及审批、流程、权限时才使用 approval。输出要求：只输出“1. 问题理解 2. 问题定位 4. 参考文档 5. 解决方案 6. 最终结论”；每部分最多 3 条；不要复述大段原始数据，不要展开分析过程，不要写无证据推断；若证据不足，直接写明缺失数据或待确认项；优先短句、结论先行、证据对应字段名。'
         },
         jira: {
             id: 'jira',
@@ -303,7 +303,7 @@
                 instruction: isReferenceOnlyAnalysis
                     ? '当前分析类型为场景分析。不要分析业务数据，不要依赖临时文件中的各页签 JSON，请直接根据用户问题和 references 参考文件内容进行场景匹配、功能说明与方案建议。'
                     : isDataAnalysis
-                        ? '当前分析类型为数据分析。只使用 guideRef 和 files 中的四个 JSON 文件；默认不要读取 references。优先使用 compactSnapshot 中的字段映射、当前值、日志变更摘要进行判断；仅在摘要不足时再回看原始 JSON。输出必须短、准、基于证据。'
+                        ? '当前分析类型为数据分析。所有 guideRef/fileRef 相对路径均以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径。优先使用 compactSnapshot 中的字段映射、当前值、日志变更摘要和权限摘要进行判断；仅在摘要不足时再按需读取 guideRef 和 files 中的四个 JSON 文件。默认不要读取 references。输出必须短、准、基于证据，每部分最多 3 条。'
                         : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
             }
         };
@@ -500,12 +500,69 @@
 
     function buildCompactDataAnalysisSnapshot() {
         const tabs = currentAnalysisContext && currentAnalysisContext.tabs ? currentAnalysisContext.tabs : {};
+        const formConfigSummary = summarizeFormConfigForAI(tabs.formConfig && tabs.formConfig.normalized);
+        const documentSummary = summarizeDocumentForAI(tabs.document && tabs.document.normalized);
+        const approvalSummary = summarizeApprovalForAI(tabs.approval && tabs.approval.normalized);
+        const businessLogSummary = summarizeBusinessLogForAI(tabs.businessLog && tabs.businessLog.normalized);
+
         return sanitizeDataForAI({
-            formConfig: summarizeFormConfigForAI(tabs.formConfig && tabs.formConfig.normalized),
-            document: summarizeDocumentForAI(tabs.document && tabs.document.normalized),
-            approval: summarizeApprovalForAI(tabs.approval && tabs.approval.normalized),
-            businessLog: summarizeBusinessLogForAI(tabs.businessLog && tabs.businessLog.normalized)
+            meta: {
+                sessionId: analysisSessionId,
+                analysisType: getAIAnalysisTypeValue(),
+                generatedAt: new Date().toISOString()
+            },
+            fieldMap: formConfigSummary.主表字段映射 || [],
+            currentValues: documentSummary.主表字段值 || [],
+            changeTimeline: buildChangeTimelineForAI(businessLogSummary.日志摘要 || []),
+            permissionSummary: documentSummary.字段权限 || {},
+            processSummary: {
+                流程状态: approvalSummary.流程状态 || (documentSummary.流程字段 && documentSummary.流程字段.流程状态) || '-',
+                当前任务: approvalSummary.当前任务 || [],
+                发起人: approvalSummary.发起人 || '-',
+                发起时间: approvalSummary.发起时间 || '-',
+                流程实例ID: documentSummary.流程实例ID || '-'
+            },
+            sourceSummaries: {
+                formConfig: formConfigSummary,
+                document: documentSummary,
+                approval: approvalSummary,
+                businessLog: businessLogSummary
+            }
         });
+    }
+
+    function buildChangeTimelineForAI(logItems) {
+        return (Array.isArray(logItems) ? logItems : []).slice(0, 20).map((item) => ({
+            操作时间: item.操作时间 || '-',
+            操作类型编码: item.操作类型编码 || '-',
+            操作对象名称: item.操作对象名称 || '-',
+            操作结果: item.操作结果 || '-',
+            接口名称: item.接口名称 || '-',
+            请求路径: item.请求路径 || '-',
+            formData字段: summarizeTimelineFieldsForAI(item.formData字段),
+            head字段: summarizeTimelineHeadForAI(item.head字段)
+        }));
+    }
+
+    function summarizeTimelineFieldsForAI(fields) {
+        return (Array.isArray(fields) ? fields : []).slice(0, 50).map((item) => ({
+            字段ID: item.字段ID || '-',
+            字段编码: item.字段编码 || '-',
+            控件类型: item.控件类型 || '-',
+            value: item.value !== undefined ? item.value : '-',
+            showValue: item.showValue !== undefined ? item.showValue : '-'
+        }));
+    }
+
+    function summarizeTimelineHeadForAI(head) {
+        if (!head || typeof head !== 'object') {
+            return {};
+        }
+        const result = {};
+        Object.keys(head).slice(0, 50).forEach((key) => {
+            result[key] = head[key];
+        });
+        return result;
     }
 
     function summarizeFormConfigForAI(data) {
@@ -549,6 +606,7 @@
             单据时间: data.单据时间 || '-',
             最后修改时间: data.最后修改时间 || '-',
             流程字段: sanitizeDataForAI(data.流程字段 || {}),
+            字段权限: sanitizeDataForAI(data.字段权限 || {}),
             主表字段值: mainRows.slice(0, 80).map((item) => ({
                 字段名称: item.字段名称 || '-',
                 字段ID: item.fieldId || item.字段ID || '-',

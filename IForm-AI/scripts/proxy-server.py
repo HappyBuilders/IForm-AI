@@ -954,9 +954,11 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             instruction = (
                 '你是一名 Jira 问题分析工程师，同时熟悉 IForm 业务表单、单据、审批、日志和 Jira 工单场景。'
                 '你需要结合输入的问题描述、当前详情页各页签接口原始 JSON 文件、字段含义说明以及参考文档进行问题定位。'
-                '各页签大体量数据不会直接放在本 prompt 中，而是以本地 JSON 文件形式提供。'
-                '请先读取 analysisContext.files 中列出的相对文件引用，并结合 analysisContext.guideRef 指向的说明文档理解字段含义和页签关联。'
-                '不要要求调用方重复粘贴各页签 JSON，也不要假设 prompt 中已经内嵌了完整业务数据。'
+                '各页签大体量数据不会直接放在本 prompt 中，而是以 compactSnapshot 摘要和本地 JSON 文件形式提供。'
+                '所有 guideRef、fileRef 等相对文件引用，均以当前 iform-ai 技能安装目录/技能根目录为基准解析；不要写死某台机器上的绝对路径，也不要改到 workspace 或 references/assets 下探测。'
+                '请优先使用 prompt 中的 compactSnapshot；只有摘要证据不足时，才读取 analysisContext.files 中列出的相对文件引用，并结合 analysisContext.guideRef 指向的说明文档理解字段含义和页签关联。'
+                'analysisType=overview/数据分析时，默认不要读取 references，也不要扩展参考资料；除非 analysisContext.instruction 明确要求知识库/参考文档。'
+                '不要要求调用方重复粘贴各页签 JSON，也不要假设 prompt 中已经内嵌了完整原始业务数据。'
                 '请优先依据证据链分析，不要臆造系统中不存在的字段或结论。'
                 '如果信息不足，要明确指出缺失数据和待确认项。'
                 '输出请使用中文，并严格按以下结构输出：'
@@ -989,6 +991,9 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'tabStatus': {} if is_reference_only_analysis else tab_status,
             'analysisContext': minimal_analysis_context
         }
+
+        if not is_reference_only_analysis and isinstance(payload.get('compactSnapshot'), dict):
+            prompt_payload['compactSnapshot'] = payload.get('compactSnapshot')
 
         return (
             f"{instruction}\n\n"
@@ -1520,11 +1525,19 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return self.invoke_openclaw_agent_via_gateway(prompt_with_guide, gateway_url, gateway_token, model)
 
     def inject_reference_guide(self, prompt_text):
-        """注入参考文档扫描指导"""
+        """Append reference index only when needed; overview data analysis should not be guided to references by default."""
+        if self.should_skip_reference_guide(prompt_text):
+            return prompt_text
+
         guide = self.build_reference_index_guide()
         if not guide:
             return prompt_text
         return f"{prompt_text}\n\n{guide}"
+
+    def should_skip_reference_guide(self, prompt_text):
+        """Skip global references index for compact data analysis prompts."""
+        normalized = str(prompt_text or '').lower()
+        return '"analysistype": "overview"' in normalized
 
     # ========== AI 分析相关函数 ==========
     def build_analysis_prompt(self, base_prompt, data, analysis_type):
