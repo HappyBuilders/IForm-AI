@@ -41,6 +41,13 @@ AI_REFERENCE_FILES = [
     DIRECTORY / 'PROJECT_REQUIREMENTS.md',
     DIRECTORY / 'REQUIREMENT_CHANGES.md'
 ]
+AI_ANALYSIS_MINIMAL_REFERENCE_NAMES = {
+    AI_ANALYSIS_DATA_GUIDE_PATH.name,
+    'formConfig.json',
+    'document.json',
+    'approval.json',
+    'businessLog.json'
+}
 
 # 异步任务存储
 LLM_TASKS = {}  # task_id -> {'status': 'pending|running|completed|failed', 'result': None, 'error': None}
@@ -1270,6 +1277,54 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         return '\n\n'.join(contents)
 
+    def is_minimal_data_analysis_reference_file(self, file_name):
+        return str(file_name or '').strip() in AI_ANALYSIS_MINIMAL_REFERENCE_NAMES
+
+    def build_data_analysis_reference_policy(self, analysis_context=None, reference_files=None):
+        analysis_context = analysis_context if isinstance(analysis_context, dict) else {}
+        files = analysis_context.get('files', [])
+        files = files if isinstance(files, list) else []
+        requested = reference_files if isinstance(reference_files, list) else []
+
+        normalized_requested = []
+        for item in requested:
+            if isinstance(item, dict):
+                normalized_requested.append(item)
+            elif isinstance(item, str):
+                normalized_requested.append({'name': item})
+
+        minimal_requested = []
+        for item in normalized_requested:
+            raw_name = str(item.get('name', '') or '').strip()
+            if self.is_minimal_data_analysis_reference_file(raw_name):
+                minimal_requested.append(item)
+
+        minimal_context_files = []
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            raw_name = str(item.get('name', '') or '').strip()
+            if self.is_minimal_data_analysis_reference_file(raw_name):
+                minimal_context_files.append(item)
+
+        guide_ref = str(analysis_context.get('guideRef', '') or '').strip()
+        enable_full_index = False
+        instruction_text = str(analysis_context.get('instruction', '') or '')
+        question_text = str(analysis_context.get('problemDescription', '') or '')
+        full_text = f"{instruction_text}\n{question_text}".lower()
+        if '知识库文档' in full_text or 'references 索引' in full_text or 'reference index' in full_text:
+            enable_full_index = True
+
+        selected_reference_files = minimal_requested if minimal_requested else minimal_context_files
+        if guide_ref and not any(str(item.get('name', '') or '').strip() == AI_ANALYSIS_DATA_GUIDE_PATH.name for item in selected_reference_files if isinstance(item, dict)):
+            selected_reference_files = [{'name': AI_ANALYSIS_DATA_GUIDE_PATH.name}] + selected_reference_files
+
+        return {
+            'enable_full_index': enable_full_index,
+            'selected_reference_files': selected_reference_files,
+            'guide_ref': guide_ref
+        }
+
     def build_reference_index_guide(self, selected_entries=None, query_text=''):
         index = self.get_reference_index()
         entries = index.get('entries', [])
@@ -1482,10 +1537,22 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         jira = data.get('jira', None)
         problem_desc = data.get('problemDescription', '')
         reference_files = data.get('referenceFiles', [])
+        analysis_context = data.get('analysisContext', {}) if isinstance(data.get('analysisContext', {}), dict) else {}
 
-        selected_entries = self.select_reference_entries(problem_desc, reference_files)
-        ref_index_guide = self.build_reference_index_guide(selected_entries, problem_desc)
-        ref_content = self.load_reference_content_by_entries(selected_entries, problem_desc)
+        selected_entries = []
+        ref_index_guide = ''
+        ref_content = ''
+
+        if analysis_type == 'overview':
+            policy = self.build_data_analysis_reference_policy(analysis_context, reference_files)
+            selected_entries = self.select_reference_entries(problem_desc, policy.get('selected_reference_files', []))
+            if policy.get('enable_full_index'):
+                ref_index_guide = self.build_reference_index_guide(selected_entries, problem_desc)
+            ref_content = self.load_reference_content_by_entries(selected_entries, problem_desc)
+        else:
+            selected_entries = self.select_reference_entries(problem_desc, reference_files)
+            ref_index_guide = self.build_reference_index_guide(selected_entries, problem_desc)
+            ref_content = self.load_reference_content_by_entries(selected_entries, problem_desc)
 
         if analysis_type == 'diagnosis':
             return self._build_diagnosis_prompt(base_prompt, params, document, approval, business_log, problem_desc, ref_index_guide, ref_content)

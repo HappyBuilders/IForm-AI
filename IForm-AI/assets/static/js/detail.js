@@ -14,7 +14,18 @@
             formConfig: { title: '表单配置信息', formConfigPathTemplate: '/yonbip-ec-iform/iform_ctr/rt_ctr/{pk_temp}/billVue.json' },
             document: { title: '单据数据信息', path: '/yonbip-ec-iform/iform_ctr/bill_ctr/getFormData' },
             approval: { title: '流程审批信息', path: '/yonbip-ec-iform/iform_ctr/bill_ctr/loadDataJson' },
-            businessLog: { title: '业务日志', path: '/api/business/business-log' },
+            businessLog: {
+                title: '业务日志',
+                path: '/iuap-apcom-auditlog/diwork-log/business/web/search/historyList',
+                detailPath: '/iuap-apcom-auditlog/diwork-log/business/web/historyDetail',
+                listRequest: {
+                    page: 0,
+                    pageSize: 100
+                },
+                detailRequest: {
+                    translateFlag: true
+                }
+            },
             jiraAnalysis: {
                 title: 'Jira问题分析',
                 proxyBasePath: '/api/jira',
@@ -270,6 +281,11 @@
         const analysisType = getAIAnalysisTypeValue();
         const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
         const isReferenceOnlyAnalysis = isExemptFromCoreDataCheck(analysisType);
+        const isDataAnalysis = analysisType === AI_ANALYSIS_TYPES.overview.id;
+        const allContextFiles = isReferenceOnlyAnalysis ? [] : buildAnalysisContextFileList();
+        const dataAnalysisFiles = isDataAnalysis
+            ? allContextFiles.filter((item) => item && ['formConfig.json', 'document.json', 'approval.json', 'businessLog.json'].includes(item.name))
+            : allContextFiles;
 
         return {
             mode: 'jira_problem_analysis',
@@ -280,12 +296,14 @@
             tabStatus: currentAnalysisContext && currentAnalysisContext.tabStatus ? Object.assign({}, currentAnalysisContext.tabStatus) : {},
             analysisContext: {
                 sessionId: analysisSessionId,
-                files: isReferenceOnlyAnalysis ? [] : buildAnalysisContextFileList(),
+                files: dataAnalysisFiles,
                 guideFileName: AI_ANALYSIS_DATA_GUIDE_NAME,
                 guideRef: isReferenceOnlyAnalysis ? '' : resolveAnalysisGuideRef(),
                 instruction: isReferenceOnlyAnalysis
                     ? '当前分析类型为场景分析。不要分析业务数据，不要依赖临时文件中的各页签 JSON，请直接根据用户问题和 references 参考文件内容进行场景匹配、功能说明与方案建议。'
-                    : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
+                    : isDataAnalysis
+                        ? '当前分析类型为数据分析。默认不要注入完整 references 索引预览；只保留 AI_ANALYSIS_DATA_GUIDE.md 和 files 中的四个 JSON 文件引用（formConfig.json、document.json、approval.json、businessLog.json）。只有当用户问题明显需要知识库文档时，才启用 references 索引并补充相关文档内容。'
+                        : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
             },
             generatedAt: new Date().toISOString()
         };
@@ -767,7 +785,7 @@
             case 'approval':
                 return requestApprovalData(params, baseUrl, runtimeContext);
             case 'businessLog':
-                return buildMockTabData(tabKey, params);
+                return requestBusinessLogData(params, baseUrl, runtimeContext);
             case 'jiraAnalysis':
                 return requestJiraAnalysisData(params, runtimeContext);
             default:
@@ -879,6 +897,82 @@
     async function requestApprovalData(params, baseUrl, runtimeContext) {
         const normalized = await ensureApprovalParsed(params, baseUrl, runtimeContext);
         return buildApprovalRenderData(normalized, runtimeContext.shared.approvalOriginalRaw);
+    }
+
+    async function requestBusinessLogData(params, baseUrl, runtimeContext) {
+        if (runtimeContext.shared.businessLogData) {
+            return runtimeContext.shared.businessLogData;
+        }
+
+        if (runtimeContext.shared.businessLogPromise) {
+            return runtimeContext.shared.businessLogPromise;
+        }
+
+        runtimeContext.shared.businessLogPromise = (async () => {
+            const businessLogConfig = CONFIG.tabs.businessLog || {};
+            const listRequestConfig = businessLogConfig.listRequest || {};
+            const detailRequestConfig = businessLogConfig.detailRequest || {};
+            const listRawResponse = await requestJson(
+                buildRequestUrl(businessLogConfig.path, baseUrl, {
+                    busiObjId: params.pkBoins,
+                    busiObjCode: '',
+                    busiObjTypeCode: '',
+                    page: listRequestConfig.page === undefined ? 0 : listRequestConfig.page,
+                    pageSize: listRequestConfig.pageSize || 100
+                }),
+                params,
+                'businessLog'
+            );
+            const logList = normalizeBusinessLogListResponse(listRawResponse);
+            if (!logList.length && isBusinessLogMockPayload(listRawResponse)) {
+                runtimeContext.shared.businessLogData = listRawResponse;
+                runtimeContext.shared.businessLogRaw = listRawResponse;
+                return listRawResponse;
+            }
+
+            const detailIds = logList
+                .map((item) => item && item.businessId)
+                .filter(Boolean);
+
+            let detailRawResponse = null;
+            let detailList = [];
+            if (detailIds.length && businessLogConfig.detailPath) {
+                detailRawResponse = await requestJson(
+                    buildRequestUrl(businessLogConfig.detailPath, baseUrl, {
+                        ids: detailIds.join(','),
+                        translateFlag: detailRequestConfig.translateFlag === undefined ? true : detailRequestConfig.translateFlag
+                    }),
+                    params,
+                    'businessLog'
+                );
+                detailList = normalizeBusinessLogDetailResponse(detailRawResponse);
+            }
+
+            const renderData = buildBusinessLogRenderData(
+                params,
+                logList,
+                detailList,
+                listRawResponse,
+                detailRawResponse,
+                {
+                    page: listRequestConfig.page === undefined ? 0 : listRequestConfig.page,
+                    pageSize: listRequestConfig.pageSize || 100
+                }
+            );
+
+            runtimeContext.shared.businessLogData = renderData;
+            runtimeContext.shared.businessLogRaw = {
+                list: listRawResponse,
+                detail: detailRawResponse
+            };
+
+            return renderData;
+        })().catch((error) => {
+            runtimeContext.shared.businessLogPromise = null;
+            throw error;
+        });
+
+        return runtimeContext.shared.businessLogPromise;
     }
 
     async function requestJiraAnalysisData(params, runtimeContext, options) {
@@ -1617,6 +1711,139 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
         });
     }
 
+    function normalizeBusinessLogListResponse(response) {
+        if (!response) {
+            return [];
+        }
+
+        if (Array.isArray(response)) {
+            return response;
+        }
+
+        if (typeof response === 'string') {
+            const parsed = safeJsonParse(response, null);
+            return normalizeBusinessLogListResponse(parsed);
+        }
+
+        if (Array.isArray(response.data)) {
+            return response.data;
+        }
+
+        if (response.data && Array.isArray(response.data.records)) {
+            return response.data.records;
+        }
+
+        if (response.data && Array.isArray(response.data.list)) {
+            return response.data.list;
+        }
+
+        if (Array.isArray(response.records)) {
+            return response.records;
+        }
+
+        if (Array.isArray(response.list)) {
+            return response.list;
+        }
+
+        return [];
+    }
+
+    function normalizeBusinessLogDetailResponse(response) {
+        return normalizeBusinessLogListResponse(response);
+    }
+
+    function isBusinessLogMockPayload(response) {
+        return response &&
+            typeof response === 'object' &&
+            !Array.isArray(response) &&
+            Object.prototype.hasOwnProperty.call(response, '日志明细') &&
+            Object.prototype.hasOwnProperty.call(response, '最新状态');
+    }
+
+    function buildBusinessLogRenderData(params, logList, detailList, rawList, rawDetail, pageInfo) {
+        const environmentConfig = CONFIG.environments[params.environment] || {};
+        const authLabel = isTokenAuth(params.authType) ? 'yht_access_token 授权' : 'sso授权';
+        const detailMap = buildBusinessLogDetailMap(detailList);
+        const detailMatchedCount = logList.filter((item) => detailMap.has(item.businessId)).length;
+        const parsedLogItems = logList.map((item, index) => buildBusinessLogDisplayItem(item, detailMap.get(item.businessId), index));
+
+        return {
+            日志范围: '表单业务链路',
+            单据Id: params.pkBoins || '-',
+            表单Id: params.pkBo || '-',
+            所属环境: environmentConfig.label || params.environment || '-',
+            授权方式: authLabel,
+            当前页码: pageInfo && pageInfo.page !== undefined ? pageInfo.page : 0,
+            每页条数: pageInfo && pageInfo.pageSize ? pageInfo.pageSize : 100,
+            列表记录数: logList.length,
+            详情匹配数: detailMatchedCount,
+            最新状态: logList.length ? '已加载真实业务日志' : '当前单据暂无业务日志',
+            日志明细: parsedLogItems
+        };
+    }
+
+    function buildBusinessLogDetailMap(detailList) {
+        const detailMap = new Map();
+        (Array.isArray(detailList) ? detailList : []).forEach((item) => {
+            const businessId = item && item.businessId;
+            if (businessId) {
+                detailMap.set(businessId, item);
+            }
+        });
+        return detailMap;
+    }
+
+    function buildBusinessLogDisplayItem(listItem, detailItem, index) {
+        const mergedItem = Object.assign({}, listItem || {}, detailItem || {});
+        const parsedNewBusiObj = parseBusinessLogNewBusiObj(mergedItem.newBusiObj);
+
+        const displayItem = {
+            序号: index + 1,
+            业务日志id: mergedItem.businessId || '-',
+            操作类型编码: mergedItem.busiObjCode || '-',
+            操作对象名称: mergedItem.busiObjName || '-',
+            操作详情: mergedItem.detail || '-',
+            操作人名称: mergedItem.operatorName || '-',
+            操作时间: mergedItem.operationDate || mergedItem.ts || '-',
+            ts: mergedItem.ts || '-',
+            服务编码: mergedItem.serviceCode || '-',
+            服务名称: mergedItem.serviceName || '-',
+            应用编码: mergedItem.applicationCode || '-',
+            应用名称: mergedItem.applicationName || '-',
+            标签编码: mergedItem.labelCode || '-',
+            标签名称: mergedItem.labelName || '-',
+            租户id: mergedItem.ytenantId || mergedItem.tenantId || '-',
+            操作结果: mergedItem.operResult || '-',
+            IP: mergedItem.ip || '-'
+        };
+
+        if (detailItem) {
+            displayItem.详情数据 = {
+                newBusiObj解析结果: parsedNewBusiObj.parsed || '-',
+                newBusiObj原文: parsedNewBusiObj.raw || '-'
+            };
+        }
+
+        return displayItem;
+    }
+
+    function parseBusinessLogNewBusiObj(value) {
+        if (!value) {
+            return { raw: '', parsed: null };
+        }
+
+        if (typeof value === 'object') {
+            return { raw: JSON.stringify(value), parsed: value };
+        }
+
+        const raw = String(value);
+        const parsed = safeJsonParse(raw, null);
+        return {
+            raw: raw,
+            parsed: parsed
+        };
+    }
+
     function formatApprovalDisplayData(value, keyPath) {
         if (Array.isArray(value)) {
             return value.map((item, index) => formatApprovalDisplayData(item, (keyPath || []).concat(String(index))));
@@ -1998,6 +2225,10 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
             return renderApprovalValue(value);
         }
 
+        if (tabKey === 'businessLog') {
+            return renderBusinessLogValue(value);
+        }
+
         if (tabKey === 'jiraAnalysis') {
             return renderJiraAnalysisValue(value);
         }
@@ -2041,6 +2272,98 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
         `;
     }
 
+    function renderBusinessLogValue(value) {
+        if (!value || typeof value !== 'object') {
+            return renderBusinessValue(value);
+        }
+
+        const logs = Array.isArray(value.日志明细) ? value.日志明细 : [];
+        const baseEntries = Object.entries(value).filter(([key]) => key !== '日志明细');
+
+        return `
+            <div class="business-data-view">
+                ${baseEntries.length ? renderBusinessSection('基础信息', '展示当前业务日志查询范围、分页与加载状态。', renderBusinessTable(baseEntries)) : ''}
+                ${renderBusinessSection('日志列表', '按时间、操作人、服务和操作对象展示日志记录。', renderBusinessLogListTable(logs))}
+                ${logs.length ? renderBusinessSection('日志记录详情', '展开单条记录查看操作详情、日志体和请求内容。', renderBusinessLogDetailList(logs), { collapsible: true, sectionKey: 'business-log-record-details' }) : ''}
+            </div>
+        `;
+    }
+
+    function renderBusinessLogListTable(logs) {
+        if (!Array.isArray(logs) || !logs.length) {
+            return '<div class="empty-state">当前单据暂无业务日志</div>';
+        }
+
+        return `
+            <div class="business-table-wrap">
+                <table class="business-table business-table-detail">
+                    <thead>
+                        <tr>
+                            <th>序号</th>
+                            <th>操作时间</th>
+                            <th>操作人</th>
+                            <th>服务</th>
+                            <th>应用</th>
+                            <th>操作类型</th>
+                            <th>结果</th>
+                            <th>业务日志id</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${logs.map((item, index) => `
+                            <tr>
+                                <th scope="row">${escapeHtml(String(item.序号 || index + 1))}</th>
+                                <td>${escapeHtml(item.操作时间 || '-')}</td>
+                                <td>${escapeHtml(item.操作人名称 || '-')}</td>
+                                <td>${escapeHtml(item.服务名称 || '-')}</td>
+                                <td>${escapeHtml(item.应用名称 || '-')}</td>
+                                <td>${escapeHtml(item.操作类型编码 || '-')}</td>
+                                <td>${escapeHtml(item.操作结果 || '-')}</td>
+                                <td>${escapeHtml(item.业务日志id || '-')}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function renderBusinessLogDetailList(logs) {
+        return logs.map((item, index) => {
+            const title = [
+                item.序号 || index + 1,
+                item.操作时间 || '-',
+                item.操作类型编码 || '-',
+                item.操作人名称 || '-'
+            ].join(' / ');
+
+            return renderCollapsibleBlock(
+                title,
+                renderBusinessLogRecordDetail(item),
+                {
+                    blockClassName: 'subtable-detail-block',
+                    blockKey: `business-log-${item.业务日志id || index}`,
+                    collapsed: index > 0
+                }
+            );
+        }).join('');
+    }
+
+    function renderBusinessLogRecordDetail(item) {
+        const detailData = item && item.详情数据 && typeof item.详情数据 === 'object' ? item.详情数据 : null;
+        const baseEntries = Object.entries(item || {}).filter(([key]) => key !== '详情数据');
+        const parsedDetail = detailData ? detailData.newBusiObj解析结果 : null;
+        const rawDetail = detailData ? detailData.newBusiObj原文 : '';
+        const hasParsedDetail = Boolean(parsedDetail && parsedDetail !== '-');
+        const shouldRenderRawDetail = Boolean(rawDetail && rawDetail !== '-' && !hasParsedDetail);
+
+        return `
+            ${baseEntries.length ? renderBusinessTable(baseEntries) : ''}
+            ${hasParsedDetail ? renderBusinessSection('日志体解析结果', '以格式化 JSON 展示 newBusiObj 内容。', renderRawJsonBlock(JSON.stringify(parsedDetail, null, 2)), { collapsible: true, sectionKey: `business-log-parsed-${item.业务日志id || item.序号}`, collapsed: true }) : ''}
+            ${shouldRenderRawDetail ? renderBusinessSection('日志体原文', 'newBusiObj 无法解析为 JSON 时展示原始内容。', renderRawJsonBlock(rawDetail), { collapsible: true, sectionKey: `business-log-raw-${item.业务日志id || item.序号}`, collapsed: true }) : ''}
+        `;
+    }
+
     function renderFormConfigValue(value) {
         if (!value || typeof value !== 'object') {
             return renderBusinessValue(value);
@@ -2074,7 +2397,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
     }
 
     function renderRawJsonSection(title, note, value, sectionKey) {
-        if (!value) {
+        if (value === undefined || value === null || value === '') {
             return '';
         }
 
@@ -4516,6 +4839,18 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
     }
 
     function mergeConfig(externalConfig) {
+        const businessLogConfig = Object.assign({}, DEFAULT_CONFIG.tabs.businessLog, externalConfig.tabs && externalConfig.tabs.businessLog);
+        businessLogConfig.listRequest = Object.assign(
+            {},
+            DEFAULT_CONFIG.tabs.businessLog.listRequest,
+            externalConfig.tabs && externalConfig.tabs.businessLog && externalConfig.tabs.businessLog.listRequest
+        );
+        businessLogConfig.detailRequest = Object.assign(
+            {},
+            DEFAULT_CONFIG.tabs.businessLog.detailRequest,
+            externalConfig.tabs && externalConfig.tabs.businessLog && externalConfig.tabs.businessLog.detailRequest
+        );
+
         return {
             requestTimeout: externalConfig.requestTimeout || DEFAULT_CONFIG.requestTimeout,
             storageKey: externalConfig.storageKey || DEFAULT_CONFIG.storageKey,
@@ -4524,7 +4859,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
                 formConfig: Object.assign({}, DEFAULT_CONFIG.tabs.formConfig, externalConfig.tabs && externalConfig.tabs.formConfig),
                 document: Object.assign({}, DEFAULT_CONFIG.tabs.document, externalConfig.tabs && externalConfig.tabs.document),
                 approval: Object.assign({}, DEFAULT_CONFIG.tabs.approval, externalConfig.tabs && externalConfig.tabs.approval),
-                businessLog: Object.assign({}, DEFAULT_CONFIG.tabs.businessLog, externalConfig.tabs && externalConfig.tabs.businessLog),
+                businessLog: businessLogConfig,
                 jiraAnalysis: Object.assign({}, DEFAULT_CONFIG.tabs.jiraAnalysis, externalConfig.tabs && externalConfig.tabs.jiraAnalysis)
             }
         };
