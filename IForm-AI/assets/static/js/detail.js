@@ -115,7 +115,7 @@
         overview: {
             id: 'overview',
             name: '数据分析',
-            prompt: '你是一个专业的业务数据分析助手。请结合“表单配置信息”（这个是动态表单的设计数据）和“单据数据信息” 这个是表单的最终单据内容，来匹配对应表单控件的内容。并且着重结合“业务日志”数据来分析变化的控件内容，从日志中提炼出通一个表单控件对应的数据内容变更情况。给出：\n1. 数据概要总结\n2. 关键信息提取\n3. 变更记录追溯\n请用简洁易懂的中文回答。'
+            prompt: '你是一名 IForm 数据分析助手。仅基于 guideRef 与 files 中提供的 4 个 JSON 文件进行分析：formConfig.json、document.json、approval.json、businessLog.json。默认不要读取 references，不要扩展无关资料。分析步骤必须收敛为：1）先用 formConfig 建立 fieldId 到字段标题/控件类型/字段编码映射；2）再从 document 提取当前单据字段值；3）再从 businessLog 提取与当前单据直接相关的字段变更记录；4）仅当问题涉及审批、流程、权限时才使用 approval。输出要求：只输出“1. 问题理解 2. 问题定位 4. 参考文档 5. 解决方案 6. 最终结论”；不要复述大段原始数据，不要展开分析过程，不要写无证据推断；若证据不足，直接写明缺失数据或待确认项；优先短句、结论先行、证据对应字段名。'
         },
         jira: {
             id: 'jira',
@@ -168,8 +168,7 @@
         }
 
         if (!isExemptAnalysis && !buildAnalysisContextFileList().length) {
-            showToast('分析上下文文件尚未生成，请先重新加载相关页签数据', 'error');
-            return;
+            console.warn('analysisContext.files 为空，将继续依赖 sessionId 对应的 manifest.json 进行后端兜底发现');
         }
 
         const analysisData = buildAIAnalysisRequestPayload(problemDescription);
@@ -223,11 +222,13 @@
 
         const taskId = submitResult.data.taskId;
         const maxAttempts = 120;
-        const pollInterval = 5000;
+        const pollIntervalMs = 5000;
         let attempts = 0;
+        let elapsedMs = 0;
 
         while (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
+            await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+            elapsedMs += pollIntervalMs;
 
             const statusUrl = buildLocalProxyUrl(`/api/llm/analyze/status/${taskId}`);
             const statusResponse = await fetch(statusUrl);
@@ -248,7 +249,7 @@
             attempts++;
 
             if (elements.panels.aiAnalysis) {
-                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在分析中... (' + Math.round(attempts * 5) + '秒)</div>';
+                elements.panels.aiAnalysis.innerHTML = '<div class="ai-analysis-loading">正在分析中... (' + Math.round(elapsedMs / 1000) + '秒)</div>';
             }
         }
 
@@ -284,16 +285,16 @@
         const isDataAnalysis = analysisType === AI_ANALYSIS_TYPES.overview.id;
         const allContextFiles = isReferenceOnlyAnalysis ? [] : buildAnalysisContextFileList();
         const dataAnalysisFiles = isDataAnalysis
-            ? allContextFiles.filter((item) => item && ['formConfig.json', 'document.json', 'approval.json', 'businessLog.json'].includes(item.name))
+            ? allContextFiles.filter((item) => item && ['formConfig.json', 'document.json', 'approval.json', 'businessLog.json'].includes(item.fileName || item.name))
             : allContextFiles;
+        const dataAnalysisSnapshot = isDataAnalysis ? buildCompactDataAnalysisSnapshot() : null;
 
-        return {
+        const payload = {
             mode: 'jira_problem_analysis',
             analysisType: analysisType,
             analysisTypeName: analysisTemplate.name,
             problemDescription: problemDescription,
-            params: sanitizeParamsForAI(currentParams || {}),
-            tabStatus: currentAnalysisContext && currentAnalysisContext.tabStatus ? Object.assign({}, currentAnalysisContext.tabStatus) : {},
+            params: isDataAnalysis ? buildCompactAIParams(currentParams || {}) : sanitizeParamsForAI(currentParams || {}),
             analysisContext: {
                 sessionId: analysisSessionId,
                 files: dataAnalysisFiles,
@@ -302,11 +303,19 @@
                 instruction: isReferenceOnlyAnalysis
                     ? '当前分析类型为场景分析。不要分析业务数据，不要依赖临时文件中的各页签 JSON，请直接根据用户问题和 references 参考文件内容进行场景匹配、功能说明与方案建议。'
                     : isDataAnalysis
-                        ? '当前分析类型为数据分析。默认不要注入完整 references 索引预览；只保留 AI_ANALYSIS_DATA_GUIDE.md 和 files 中的四个 JSON 文件引用（formConfig.json、document.json、approval.json、businessLog.json）。只有当用户问题明显需要知识库文档时，才启用 references 索引并补充相关文档内容。'
+                        ? '当前分析类型为数据分析。只使用 guideRef 和 files 中的四个 JSON 文件；默认不要读取 references。优先使用 compactSnapshot 中的字段映射、当前值、日志变更摘要进行判断；仅在摘要不足时再回看原始 JSON。输出必须短、准、基于证据。'
                         : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
-            },
-            generatedAt: new Date().toISOString()
+            }
         };
+
+        if (isDataAnalysis) {
+            payload.compactSnapshot = dataAnalysisSnapshot;
+        } else {
+            payload.tabStatus = currentAnalysisContext && currentAnalysisContext.tabStatus ? Object.assign({}, currentAnalysisContext.tabStatus) : {};
+            payload.generatedAt = new Date().toISOString();
+        }
+
+        return payload;
     }
 
     function buildAnalysisContextFileList() {
@@ -452,6 +461,15 @@
         });
     }
 
+    function buildCompactAIParams(params) {
+        return sanitizeDataForAI({
+            environment: params.environment || '',
+            ytenant_id: params.ytenant_id || '',
+            pkBo: params.pkBo || '',
+            pkBoins: params.pkBoins || ''
+        });
+    }
+
     function sanitizeDataForAI(value, depth) {
         const nextDepth = typeof depth === 'number' ? depth : 0;
         if (nextDepth > 6) {
@@ -480,21 +498,186 @@
         return result;
     }
 
-    // 缺失的 summarize 函数
+    function buildCompactDataAnalysisSnapshot() {
+        const tabs = currentAnalysisContext && currentAnalysisContext.tabs ? currentAnalysisContext.tabs : {};
+        return sanitizeDataForAI({
+            formConfig: summarizeFormConfigForAI(tabs.formConfig && tabs.formConfig.normalized),
+            document: summarizeDocumentForAI(tabs.document && tabs.document.normalized),
+            approval: summarizeApprovalForAI(tabs.approval && tabs.approval.normalized),
+            businessLog: summarizeBusinessLogForAI(tabs.businessLog && tabs.businessLog.normalized)
+        });
+    }
+
     function summarizeFormConfigForAI(data) {
-        return sanitizeDataForAI(data);
+        if (!data || typeof data !== 'object') {
+            return {};
+        }
+
+        const mainFields = Array.isArray(data.主表字段) ? data.主表字段 : [];
+        const subTables = Array.isArray(data.子表配置) ? data.子表配置 : [];
+        return {
+            表单标题: data.表单标题 || '-',
+            表单版本id: data['表单版本id（pk_temp）'] || '-',
+            流程定义ID: data.流程定义ID || '-',
+            主表字段数量: data.主表字段数量 || mainFields.length || 0,
+            子表数量: data.子表数量 || subTables.length || 0,
+            主表字段映射: mainFields.slice(0, 80).map((item) => ({
+                字段名称: item.字段名称 || '-',
+                字段ID: item.fieldId || item.字段ID || '-',
+                字段编码: item.columncode || item.字段编码 || '-',
+                控件类型: item.组件类型 || item.componentKey || '-'
+            })),
+            子表配置: subTables.slice(0, 20).map((item) => ({
+                标题: item.标题 || '-',
+                fieldId: item.fieldId || '-',
+                子字段数量: item.子字段数量 || 0
+            }))
+        };
     }
 
     function summarizeDocumentForAI(data) {
-        return sanitizeDataForAI(data);
+        if (!data || typeof data !== 'object') {
+            return {};
+        }
+
+        const mainRows = Array.isArray(data.主表字段) ? data.主表字段 : [];
+        const subRows = Array.isArray(data.子表数据) ? data.子表数据 : [];
+        return {
+            单据版本: data.单据版本 || '-',
+            流程版本: data.流程版本 || '-',
+            流程实例ID: data.流程实例ID || '-',
+            单据时间: data.单据时间 || '-',
+            最后修改时间: data.最后修改时间 || '-',
+            流程字段: sanitizeDataForAI(data.流程字段 || {}),
+            主表字段值: mainRows.slice(0, 80).map((item) => ({
+                字段名称: item.字段名称 || '-',
+                字段ID: item.fieldId || item.字段ID || '-',
+                字段编码: item.columncode || item.字段编码 || '-',
+                控件类型: item.组件类型 || item.componentKey || '-',
+                当前值: item.值 || item.value || '-',
+                显示值: item.显示值 || item.name || '-'
+            })),
+            子表行数: subRows.length
+        };
     }
 
     function summarizeApprovalForAI(data) {
-        return sanitizeDataForAI(data);
+        if (!data || typeof data !== 'object') {
+            return {};
+        }
+
+        const currentTasks = Array.isArray(data.当前任务) ? data.当前任务 : [];
+        const records = Array.isArray(data.审批记录) ? data.审批记录 : [];
+        return {
+            流程标题: data.流程标题 || '-',
+            流程模型名称: data.流程模型名称 || '-',
+            流程状态: data.流程状态 || '-',
+            发起时间: data.发起时间 || '-',
+            发起人: data.发起人 || '-',
+            当前任务: currentTasks.slice(0, 10),
+            审批记录摘要: records.slice(0, 20).map((item) => ({
+                节点名称: item.节点名称 || '-',
+                处理人: item.处理人 || '-',
+                开始时间: item.开始时间 || '-',
+                完成时间: item.完成时间 || '-',
+                已完成: item.已完成
+            }))
+        };
     }
 
     function summarizeBusinessLogForAI(data) {
-        return sanitizeDataForAI(data);
+        if (!data || typeof data !== 'object') {
+            return {};
+        }
+
+        const items = Array.isArray(data.日志明细) ? data.日志明细 : [];
+        return {
+            日志范围: data.日志范围 || '-',
+            列表记录数: data.列表记录数 || items.length || 0,
+            详情匹配数: data.详情匹配数 || 0,
+            最新状态: data.最新状态 || '-',
+            日志摘要: items.slice(0, 20).map((item) => summarizeBusinessLogItemForAI(item))
+        };
+    }
+
+    function summarizeBusinessLogItemForAI(item) {
+        const detail = item && item.详情数据 ? item.详情数据 : {};
+        const parsed = detail.newBusiObj解析结果 || {};
+        const extendParams = parsed.extendParams || {};
+        const requestParams = extendParams.requestParams || {};
+        const formData = parsePossibleJson(requestParams.formData);
+        const datas = parsePossibleJson(requestParams.datas);
+        const attachmentList = firstNonEmptyStructuredValue([
+            requestParams.attachmentList,
+            datas && datas.attachmentList,
+            parsed.attachmentList
+        ]);
+
+        return {
+            序号: item && item.序号,
+            操作类型编码: item && item.操作类型编码 || '-',
+            操作对象名称: item && item.操作对象名称 || '-',
+            操作时间: item && item.操作时间 || item && item.ts || '-',
+            操作结果: item && item.操作结果 || '-',
+            接口名称: extendParams.interfaceName || '-',
+            请求路径: extendParams.requestUri || '-',
+            attachmentList: attachmentList,
+            formData字段: summarizeFormDataArrayForAI(formData && formData.formData),
+            head字段: summarizeHeadFieldsForAI(datas && datas.head)
+        };
+    }
+
+    function summarizeFormDataArrayForAI(list) {
+        if (!Array.isArray(list)) {
+            return [];
+        }
+
+        return list.slice(0, 50).map((item) => ({
+            字段编码: item && item.name || '-',
+            字段ID: item && item.fieldId || '-',
+            控件类型: item && item.type || '-',
+            value: item && item.value !== undefined ? item.value : '-',
+            showValue: item && item.showValue !== undefined ? item.showValue : '-'
+        }));
+    }
+
+    function summarizeHeadFieldsForAI(head) {
+        if (!head || typeof head !== 'object') {
+            return {};
+        }
+
+        const result = {};
+        Object.keys(head).slice(0, 80).forEach((key) => {
+            result[key] = head[key];
+        });
+        return result;
+    }
+
+    function parsePossibleJson(value) {
+        if (!value) {
+            return null;
+        }
+
+        if (typeof value === 'object') {
+            return value;
+        }
+
+        if (typeof value !== 'string') {
+            return null;
+        }
+
+        return safeJsonParse(value, null);
+    }
+
+    function firstNonEmptyStructuredValue(values) {
+        for (let index = 0; index < values.length; index += 1) {
+            const value = values[index];
+            if (value === undefined || value === null || value === '') {
+                continue;
+            }
+            return value;
+        }
+        return '';
     }
 
     function summarizeJiraContextForAI(data) {
