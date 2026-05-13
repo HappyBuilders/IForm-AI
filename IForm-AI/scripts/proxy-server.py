@@ -170,7 +170,7 @@ def load_runtime_config():
             'enabled': bool(jira_config.get('enabled')),
             'baseUrl': str(jira_config.get('baseUrl', '') or '').strip()
         }
-    
+
     # 读取 YonClaw 配置
     yonclaw_config = loaded.get('yonclaw', {})
     if isinstance(yonclaw_config, dict):
@@ -180,7 +180,7 @@ def load_runtime_config():
             'model': str(yonclaw_config.get('model', 'openclaw/main') or '').strip(),
             'cliPath': str(yonclaw_config.get('cliPath', '') or '').strip()
         }
-    
+
     return config
 
 
@@ -1427,7 +1427,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 'topLevel': entry.get('topLevel'),
                 'keywords': entry.get('keywords', [])
             })
-        
+
         # 获取 assets 目录下的文件
         asset_files = []
         for f in AI_REFERENCE_FILES:
@@ -1437,7 +1437,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     'path': str(f),
                     'size': f.stat().st_size
                 })
-        
+
         self.send_json_response(200, {
             'code': 200,
             'data': {

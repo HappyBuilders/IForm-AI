@@ -17,7 +17,15 @@ window.IFormDetailConfig = {
         },
         businessLog: {
             title: '业务日志',
-            path: '/api/business/business-log'
+            path: '/iuap-apcom-auditlog/diwork-log/business/web/search/historyList',
+            detailPath: '/iuap-apcom-auditlog/diwork-log/business/web/historyDetail',
+            listRequest: {
+                page: 0,
+                pageSize: 100
+            },
+            detailRequest: {
+                translateFlag: true
+            }
         },
         jiraAnalysis: {
             title: 'Jira问题分析',
