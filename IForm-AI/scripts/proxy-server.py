@@ -952,21 +952,30 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
         else:
             instruction = (
-                '你是一名 Jira 问题分析工程师，同时熟悉 IForm 业务表单、单据、审批、日志和 Jira 工单场景。'
-                '你需要结合输入的问题描述、当前详情页各页签接口原始 JSON 文件、字段含义说明以及参考文档进行问题定位。'
-                '各页签大体量数据不会直接放在本 prompt 中，而是以 compactSnapshot 摘要文件和本地 JSON 文件形式提供。'
-                '所有 guideRef、fileRef、compactSnapshotRef.fileRef 等相对文件引用，均以当前 iform-ai 技能安装目录/技能根目录为基准解析；不要写死某台机器上的绝对路径，也不要改到 workspace 或 references/assets 下探测。'
-                '请优先读取 analysisContext.compactSnapshotRef 指向的 compactSnapshot.json 摘要文件；只有摘要证据不足时，才读取 analysisContext.files 中列出的相对文件引用，并结合 analysisContext.guideRef 指向的说明文档理解字段含义和页签关联。'
-                'analysisType=overview/数据分析时，默认不要读取 references，也不要扩展参考资料；除非 analysisContext.instruction 明确要求知识库/参考文档。'
-                '不要要求调用方重复粘贴各页签 JSON，也不要假设 prompt 中已经内嵌了完整原始业务数据。'
-                '请优先依据证据链分析，不要臆造系统中不存在的字段或结论。'
-                '如果信息不足，要明确指出缺失数据和待确认项。'
-                '输出请使用中文，并严格按以下结构输出：'
+                '角色：Jira / IForm 问题分析工程师。'
+                '任务：根据问题描述与 IForm 单据、审批、日志、字段说明，完成问题定位。'
+                '数据读取规则：'
+                '- 首选：analysisBundleInline。'
+                '- 次选：analysisContext.bundleRef.fileRef 的 analysisBundle.json。'
+                '- 兜底：仅当 bundle 证据不足时，读取 compactSnapshotRef、fallbackFiles 或 files。'
+                '- 路径：所有相对 fileRef/guideRef 均以 iform-ai 技能根目录解析。'
+                '- 禁止：写死绝对路径；改到 workspace、references/assets 下探测；要求调用方重复粘贴 JSON。'
+                '- overview/数据分析：默认不读 references，除非 instruction 明确要求。'
+                '证据规则：'
+                '- 优先使用 bundle 中 evidencePack、compactSnapshot。'
+                '- 只基于已有字段、日志、权限、流程证据下结论。'
+                '- 不臆造字段、操作人、状态或系统机制。'
+                '- 证据不足时，列出缺失数据和待确认项。'
+                '输出要求：'
+                '- 中文。'
+                '- 短、准。'
+                '- 每部分最多 4 条，关键证据部分可扩充。'
+                '- 严格按结构输出：'
                 '1. 问题理解'
                 '2. 问题定位'
-                '4. 参考文档'
-                '5. 解决方案'
-                '6. 最终结论'
+                '3. 参考文档'
+                '4. 解决方案'
+                '5. 最终结论'
             )
 
         minimal_params = {} if is_reference_only_analysis else {
@@ -979,7 +988,9 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'sessionId': analysis_context.get('sessionId', ''),
             'guideFileName': analysis_context.get('guideFileName', ''),
             'guideRef': analysis_context.get('guideRef', ''),
+            'bundleRef': {} if is_reference_only_analysis else analysis_context.get('bundleRef', {}),
             'compactSnapshotRef': {} if is_reference_only_analysis else analysis_context.get('compactSnapshotRef', {}),
+            'fallbackFiles': [] if is_reference_only_analysis else analysis_context.get('fallbackFiles', analysis_context.get('files', [])),
             'files': [] if is_reference_only_analysis else analysis_context.get('files', []),
             'instruction': analysis_context.get('instruction', '')
         }
@@ -993,10 +1004,15 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'analysisContext': minimal_analysis_context
         }
 
-        # 兼容旧前端：正常情况下 compactSnapshot 已保存为 analysisContext.compactSnapshotRef 指向的临时文件；
+        if not is_reference_only_analysis and isinstance(payload.get('analysisBundleInline'), dict):
+            prompt_payload['analysisBundleInline'] = payload.get('analysisBundleInline')
+
+        # 兼容旧前端：正常情况下上下文已通过 analysisBundleInline/bundleRef 或 compactSnapshotRef 提供；
         # 只有保存失败或旧版本前端仍内联 compactSnapshot 时，才透传到 prompt。
         if (
             not is_reference_only_analysis
+            and not prompt_payload.get('analysisBundleInline')
+            and not minimal_analysis_context.get('bundleRef')
             and not minimal_analysis_context.get('compactSnapshotRef')
             and isinstance(payload.get('compactSnapshot'), dict)
         ):

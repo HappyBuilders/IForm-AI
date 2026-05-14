@@ -15,6 +15,28 @@
 
 如果某个文件不存在，说明对应页签未加载成功、未触发请求或该能力当前没有可用数据。分析时应明确指出缺失文件，而不是臆造数据。
 
+## 智能分析合并上下文：analysisBundle.json
+
+`analysisBundle.json` 是智能分析优先读取的合并上下文文件，用于减少模型多次读取临时文件的 IO 开销。若 prompt 中已经存在 `analysisBundleInline`，应直接使用内联内容，不再读取 `analysisBundle.json`。
+
+常见字段如下：
+
+- `meta`：合并上下文生成信息，包括 `sessionId`、`analysisType`、`analysisTypeName`、`generatedAt`。
+- `problemDescription`：本次用户输入的问题描述。
+- `readStrategy`：读取策略，说明优先使用 bundle、何时读取兜底文件。
+- `params`：本次分析的关键参数摘要。
+- `evidencePack`：根据问题描述命中的字段、日志、权限、流程等证据包。
+- `compactSnapshot`：数据分析摘要快照。
+- `fallbackFiles`：原始页签 JSON 文件引用，只有 bundle 证据不足时才读取。
+- `guideRef`：字段说明文档引用。
+
+分析建议：
+
+- 优先使用 prompt 中的 `analysisBundleInline`。
+- 如果没有内联内容，优先读取 `analysisContext.bundleRef.fileRef` 指向的 `analysisBundle.json`。
+- 只有 `evidencePack` 和 `compactSnapshot` 证据不足时，才读取 `fallbackFiles` 中的原始 JSON。
+- 默认不要读取 references。
+
 ## 数据分析摘要：compactSnapshot.json
 
 `compactSnapshot.json` 是数据分析场景优先使用的轻量摘要文件，用于在不读取大体量原始 JSON 的情况下快速定位问题。常见字段如下：

@@ -50,6 +50,8 @@
     const JIRA_COOKIE_STORAGE_KEY = CONFIG.storageKey + '_jira_cookie';
     const JIRA_RECENT_ISSUES_PAGE_SIZE = 10;
     const AI_ANALYSIS_DATA_GUIDE_NAME = 'AI_ANALYSIS_DATA_GUIDE.md';
+    const ANALYSIS_BUNDLE_INLINE_MAX_CHARS = 100000;
+    const ANALYSIS_BUNDLE_FILE_MAX_CHARS = 200000;
     const collapseStateStore = {};
     const PARAM_DEPENDENT_TAB_KEYS = ['formConfig', 'document', 'approval'];
     const analysisSessionId = buildAnalysisSessionId();
@@ -115,7 +117,34 @@
         overview: {
             id: 'overview',
             name: '数据分析',
-            prompt: '你是一名 IForm 数据分析助手。所有 guideRef、fileRef、compactSnapshotRef.fileRef 相对路径都以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径，也不要改到 workspace 或 references/assets 下探测。数据分析优先读取 analysisContext.compactSnapshotRef 指向的 compactSnapshot.json 摘要文件（字段映射、当前值、日志变更摘要、权限摘要）；只有摘要不足时，才按需读取 guideRef 与 files 中提供的 JSON 文件：formConfig.json、document.json、approval.json、businessLog.json。默认不要读取 references，不要扩展无关资料。分析步骤必须收敛为：1）先用 compactSnapshot.json 的 fieldMap/currentValues/changeTimeline 判断；2）摘要不足时再用 formConfig 建立 fieldId 到字段标题/控件类型/字段编码映射；3）再从 document 提取当前单据字段值；4）再从 businessLog 提取与当前单据直接相关的字段变更记录；5）仅当问题涉及审批、流程、权限时才使用 approval。输出要求：只输出“1. 问题理解 2. 问题定位 4. 参考文档 5. 解决方案 6. 最终结论”；每部分最多 3 条；不要复述大段原始数据，不要展开分析过程，不要写无证据推断；若证据不足，直接写明缺失数据或待确认项；优先短句、结论先行、证据对应字段名。'
+            prompt: `角色：Jira / IForm 问题分析工程师。
+
+任务：根据问题描述与 IForm 单据、审批、日志、字段说明，完成问题定位。
+
+数据读取规则：
+- 首选：analysisBundleInline。
+- 次选：analysisContext.bundleRef.fileRef 的 analysisBundle.json。
+- 兜底：仅当 bundle 证据不足时，读取 compactSnapshotRef、fallbackFiles 或 files。
+- 路径：所有相对 fileRef/guideRef 均以 iform-ai 技能根目录解析。
+- 禁止：写死绝对路径；改到 workspace、references/assets 下探测；要求调用方重复粘贴 JSON。
+- overview/数据分析：默认不读 references，除非 instruction 明确要求。
+
+证据规则：
+- 优先使用 bundle 中 evidencePack、compactSnapshot。
+- 只基于已有字段、日志、权限、流程证据下结论。
+- 不臆造字段、操作人、状态或系统机制。
+- 证据不足时，列出缺失数据和待确认项。
+
+输出要求：
+- 中文。
+- 短、准。
+- 每部分最多 4 条，关键证据部分可扩充。
+- 严格按结构输出：
+ 1. 问题理解
+ 2. 问题定位
+ 3. 参考文档
+ 4. 解决方案
+ 5. 最终结论`
         },
         jira: {
             id: 'jira',
@@ -288,8 +317,16 @@
             ? allContextFiles.filter((item) => item && ['formConfig.json', 'document.json', 'approval.json', 'businessLog.json'].includes(item.fileName || item.name))
             : allContextFiles;
         const dataAnalysisSnapshot = isDataAnalysis ? buildCompactDataAnalysisSnapshot() : null;
+        const analysisBundle = isDataAnalysis
+            ? shrinkAnalysisBundle(buildAnalysisBundle(problemDescription, dataAnalysisSnapshot, dataAnalysisFiles), ANALYSIS_BUNDLE_FILE_MAX_CHARS)
+            : null;
+        const analysisBundleText = analysisBundle ? JSON.stringify(analysisBundle) : '';
+        const shouldInlineBundle = Boolean(analysisBundle && analysisBundleText.length <= ANALYSIS_BUNDLE_INLINE_MAX_CHARS);
         const compactSnapshotRef = isDataAnalysis
             ? await saveAnalysisContextFile('compactSnapshot', dataAnalysisSnapshot, '数据分析摘要快照：字段映射、当前值、日志变更摘要、权限摘要和来源摘要。')
+            : null;
+        const bundleRef = isDataAnalysis && !shouldInlineBundle
+            ? await saveAnalysisContextFile('analysisBundle', analysisBundle, '智能分析合并上下文：包含 evidencePack、compactSnapshot、fallbackFiles 和读取策略。')
             : null;
 
         const payload = {
@@ -306,15 +343,25 @@
                 instruction: isReferenceOnlyAnalysis
                     ? '当前分析类型为场景分析。不要分析业务数据，不要依赖临时文件中的各页签 JSON，请直接根据用户问题和 references 参考文件内容进行场景匹配、功能说明与方案建议。'
                     : isDataAnalysis
-                        ? '当前分析类型为数据分析。所有 guideRef/fileRef 相对路径均以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径。优先读取 analysisContext.compactSnapshotRef 指向的 compactSnapshot.json 摘要文件（字段映射、当前值、日志变更摘要、权限摘要）；仅在摘要不足时再按需读取 guideRef 和 files 中的四个 JSON 文件。默认不要读取 references。输出必须短、准、基于证据，每部分最多 3 条。'
+                        ? '当前分析类型为数据分析。优先使用 analysisBundleInline；其次读取 analysisContext.bundleRef.fileRef 的 analysisBundle.json；仅当 bundle 证据不足时读取 compactSnapshotRef、fallbackFiles 或 files。所有相对 fileRef/guideRef 均以 iform-ai 技能根目录解析，禁止写死绝对路径、改到 workspace/references/assets 下探测或要求调用方重复粘贴 JSON。默认不读 references，除非 instruction 明确要求。输出中文，短、准，每部分最多 4 条，严格按 1. 问题理解 2. 问题定位 3. 参考文档 4. 解决方案 5. 最终结论 输出。'
                         : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
             }
         };
 
         if (isDataAnalysis) {
+            payload.analysisContext.fallbackFiles = dataAnalysisFiles;
+            if (shouldInlineBundle) {
+                payload.analysisBundleInline = analysisBundle;
+            } else if (bundleRef) {
+                payload.analysisContext.bundleRef = bundleRef;
+            } else {
+                payload.analysisBundleInline = shrinkAnalysisBundle(analysisBundle, ANALYSIS_BUNDLE_INLINE_MAX_CHARS);
+                payload.analysisContext.bundleSaveWarning = 'analysisBundle.json 保存失败，已临时回退为 prompt 内联裁剪版 analysisBundle。';
+            }
+
             if (compactSnapshotRef) {
                 payload.analysisContext.compactSnapshotRef = compactSnapshotRef;
-            } else {
+            } else if (!payload.analysisBundleInline) {
                 payload.compactSnapshot = dataAnalysisSnapshot;
                 payload.analysisContext.compactSnapshotSaveWarning = 'compactSnapshot.json 保存失败，已临时回退为 prompt 内联 compactSnapshot。';
             }
@@ -324,6 +371,177 @@
         }
 
         return payload;
+    }
+
+    function buildAnalysisBundle(problemDescription, compactSnapshot, fallbackFiles) {
+        const analysisType = getAIAnalysisTypeValue();
+        const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
+        return sanitizeDataForAI({
+            meta: {
+                sessionId: analysisSessionId,
+                analysisType: analysisType,
+                analysisTypeName: analysisTemplate.name,
+                generatedAt: new Date().toISOString()
+            },
+            problemDescription: problemDescription,
+            readStrategy: buildAnalysisReadStrategy(analysisType),
+            params: buildCompactAIParams(currentParams || {}),
+            evidencePack: buildEvidencePack(problemDescription, compactSnapshot, fallbackFiles),
+            compactSnapshot: compactSnapshot,
+            fallbackFiles: fallbackFiles,
+            guideRef: resolveAnalysisGuideRef()
+        });
+    }
+
+    function buildAnalysisReadStrategy(analysisType) {
+        if (analysisType === AI_ANALYSIS_TYPES.overview.id) {
+            return {
+                primary: 'use_analysis_bundle_first',
+                fallback: 'only_read_fallback_files_when_bundle_evidence_is_missing',
+                doNotReadReferencesByDefault: true,
+                notes: [
+                    '优先使用 analysisBundle 中的 evidencePack 和 compactSnapshot。',
+                    '只有 evidencePack/compactSnapshot 缺少关键字段、操作人、时间或原始值时，才读取 fallbackFiles。',
+                    '默认不要读取 references。'
+                ]
+            };
+        }
+        return {
+            primary: 'use_problem_description_and_reference_docs',
+            fallback: 'read_reference_docs_when_needed'
+        };
+    }
+
+    function buildEvidencePack(problemDescription, compactSnapshot, fallbackFiles) {
+        const normalizedProblem = normalizeWhitespace(problemDescription);
+        const matchedFields = matchFieldsFromProblem(normalizedProblem, compactSnapshot);
+        return sanitizeDataForAI({
+            matchedFields: matchedFields,
+            matchedChangeRecords: matchChangeRecordsByFields(matchedFields, compactSnapshot),
+            matchedPermissions: matchPermissionsByFields(matchedFields, compactSnapshot),
+            matchedProcessItems: matchProcessItemsFromProblem(normalizedProblem, compactSnapshot),
+            fallbackFiles: fallbackFiles,
+            uncertainties: buildEvidenceUncertainties(matchedFields, normalizedProblem)
+        });
+    }
+
+    function buildFieldIndexForEvidence(compactSnapshot) {
+        const index = {};
+        const fieldMap = Array.isArray(compactSnapshot && compactSnapshot.fieldMap) ? compactSnapshot.fieldMap : [];
+        fieldMap.forEach((field) => {
+            const fieldId = field.字段ID || field.fieldId;
+            if (!fieldId) {
+                return;
+            }
+            index[fieldId] = Object.assign({}, index[fieldId] || {}, field, { 字段ID: fieldId });
+        });
+
+        const permissionSummary = compactSnapshot && compactSnapshot.permissionSummary || {};
+        Object.keys(permissionSummary).forEach((nodeName) => {
+            const items = Array.isArray(permissionSummary[nodeName]) ? permissionSummary[nodeName] : [];
+            items.forEach((item) => {
+                const fieldId = item.fieldId || item.字段ID;
+                if (!fieldId) {
+                    return;
+                }
+                index[fieldId] = Object.assign({}, index[fieldId] || {}, {
+                    字段ID: fieldId,
+                    控件名称: item.控件名称,
+                    字段名称: item.控件名称,
+                    权限: item.权限
+                });
+            });
+        });
+
+        return Object.keys(index).map((fieldId) => index[fieldId]);
+    }
+
+    function matchFieldsFromProblem(problemDescription, compactSnapshot) {
+        const fields = buildFieldIndexForEvidence(compactSnapshot);
+        const lowerProblem = String(problemDescription || '').toLowerCase();
+        return fields.filter((field) => {
+            const candidates = [
+                field.字段名称,
+                field.控件名称,
+                field.字段ID,
+                field.字段编码,
+                field.控件类型
+            ].filter(Boolean).map((item) => String(item).toLowerCase()).filter((item) => item && item !== '-');
+            return candidates.some((text) => lowerProblem.indexOf(text) >= 0);
+        }).slice(0, 20);
+    }
+
+    function matchChangeRecordsByFields(matchedFields, compactSnapshot) {
+        const fieldIds = new Set(matchedFields.map((item) => item.字段ID || item.fieldId).filter(Boolean));
+        const fieldCodes = new Set(matchedFields.map((item) => item.字段编码).filter(Boolean));
+        const timeline = Array.isArray(compactSnapshot && compactSnapshot.changeTimeline) ? compactSnapshot.changeTimeline : [];
+        if (!fieldIds.size && !fieldCodes.size) {
+            return [];
+        }
+        return timeline.filter((record) => {
+            const formFields = Array.isArray(record.formData字段) ? record.formData字段 : [];
+            const head = record.head字段 || {};
+            const hitFormData = formFields.some((field) => fieldIds.has(field.字段ID) || fieldCodes.has(field.字段编码));
+            const hitHead = Object.keys(head).some((key) => fieldIds.has(key) || fieldCodes.has(key));
+            return hitFormData || hitHead;
+        }).slice(0, 50);
+    }
+
+    function matchPermissionsByFields(matchedFields, compactSnapshot) {
+        const fieldIds = new Set(matchedFields.map((item) => item.字段ID || item.fieldId).filter(Boolean));
+        const permissionSummary = compactSnapshot && compactSnapshot.permissionSummary || {};
+        if (!fieldIds.size) {
+            return [];
+        }
+        const result = [];
+        Object.keys(permissionSummary).forEach((nodeName) => {
+            const items = Array.isArray(permissionSummary[nodeName]) ? permissionSummary[nodeName] : [];
+            items.forEach((item) => {
+                const fieldId = item.fieldId || item.字段ID;
+                if (fieldIds.has(fieldId)) {
+                    result.push(Object.assign({ 节点名称: nodeName }, item));
+                }
+            });
+        });
+        return result.slice(0, 50);
+    }
+
+    function matchProcessItemsFromProblem(problemDescription, compactSnapshot) {
+        const lowerProblem = String(problemDescription || '').toLowerCase();
+        if (!/(审批|流程|节点|处理人|任务|状态|发起人)/.test(lowerProblem)) {
+            return [];
+        }
+        return [compactSnapshot && compactSnapshot.processSummary || {}];
+    }
+
+    function buildEvidenceUncertainties(matchedFields, problemDescription) {
+        const uncertainties = [];
+        if (/(字段|控件|文本|日志|修改|变更)/.test(problemDescription) && !matchedFields.length) {
+            uncertainties.push('未从摘要字段映射或权限摘要中命中明确字段，必要时读取 fallbackFiles 中的 formConfig/businessLog 原始数据。');
+        }
+        return uncertainties;
+    }
+
+    function shrinkAnalysisBundle(bundle, maxChars) {
+        if (!bundle) {
+            return bundle;
+        }
+        if (JSON.stringify(bundle).length <= maxChars) {
+            return bundle;
+        }
+        const nextBundle = Object.assign({}, bundle);
+        if (nextBundle.compactSnapshot) {
+            nextBundle.compactSnapshot = Object.assign({}, nextBundle.compactSnapshot, {
+                changeTimeline: (nextBundle.compactSnapshot.changeTimeline || []).slice(0, 20),
+                sourceSummaries: sanitizeDataForAI(nextBundle.compactSnapshot.sourceSummaries || {}, 2)
+            });
+        }
+        if (nextBundle.evidencePack) {
+            nextBundle.evidencePack = Object.assign({}, nextBundle.evidencePack, {
+                matchedChangeRecords: (nextBundle.evidencePack.matchedChangeRecords || []).slice(0, 30)
+            });
+        }
+        return nextBundle;
     }
 
     function buildAnalysisContextFileList() {
