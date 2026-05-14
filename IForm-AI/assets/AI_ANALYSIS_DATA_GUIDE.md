@@ -6,6 +6,7 @@
 
 临时文件引用相对于当前 skill 根目录，通常位于 `.tmp/analysis/{sessionId}/`，常见文件如下：
 
+- `compactSnapshot.json`：数据分析摘要快照，来源于页面对各页签数据的轻量归纳，包含字段映射、当前值、日志变更摘要、权限摘要和来源摘要。数据分析场景应优先读取该文件。
 - `formConfig.json`：表单配置信息页签，来源于 `billVue.json`。
 - `document.json`：单据数据信息页签，来源于 `getFormData`。
 - `approval.json`：流程审批信息页签，来源于 `loadDataJson`。
@@ -13,6 +14,24 @@
 - `jiraIssueTable.json`：Jira 问题分析页签，来源于 `/rest/issueNav/1/issueTable`。
 
 如果某个文件不存在，说明对应页签未加载成功、未触发请求或该能力当前没有可用数据。分析时应明确指出缺失文件，而不是臆造数据。
+
+## 数据分析摘要：compactSnapshot.json
+
+`compactSnapshot.json` 是数据分析场景优先使用的轻量摘要文件，用于在不读取大体量原始 JSON 的情况下快速定位问题。常见字段如下：
+
+- `meta`：摘要生成信息，包括 `sessionId`、`analysisType`、`generatedAt`。
+- `fieldMap`：主表字段映射，通常包含字段名称、字段 ID、字段编码、控件类型。
+- `currentValues`：当前单据主表字段值摘要。
+- `changeTimeline`：业务日志变更时间线摘要，包含操作时间、操作类型、接口、`formData字段` 和 `head字段`。
+- `permissionSummary`：字段权限摘要。
+- `processSummary`：流程状态、当前任务、发起人、流程实例等摘要。
+- `sourceSummaries`：各页签归一化摘要，通常包含 `formConfig`、`document`、`approval`、`businessLog`。
+
+分析建议：
+
+- 数据分析问题应先读取 `analysisContext.compactSnapshotRef.fileRef` 指向的 `compactSnapshot.json`。
+- 如果该摘要已能支撑结论，不要继续读取原始页签 JSON 或 references。
+- 只有摘要字段缺失、被截断或无法确认操作人/字段含义/原始值时，再读取 `analysisContext.files` 中对应的原始 JSON 文件。
 
 ## 表单配置数据：formConfig.json
 

@@ -954,9 +954,9 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             instruction = (
                 '你是一名 Jira 问题分析工程师，同时熟悉 IForm 业务表单、单据、审批、日志和 Jira 工单场景。'
                 '你需要结合输入的问题描述、当前详情页各页签接口原始 JSON 文件、字段含义说明以及参考文档进行问题定位。'
-                '各页签大体量数据不会直接放在本 prompt 中，而是以 compactSnapshot 摘要和本地 JSON 文件形式提供。'
-                '所有 guideRef、fileRef 等相对文件引用，均以当前 iform-ai 技能安装目录/技能根目录为基准解析；不要写死某台机器上的绝对路径，也不要改到 workspace 或 references/assets 下探测。'
-                '请优先使用 prompt 中的 compactSnapshot；只有摘要证据不足时，才读取 analysisContext.files 中列出的相对文件引用，并结合 analysisContext.guideRef 指向的说明文档理解字段含义和页签关联。'
+                '各页签大体量数据不会直接放在本 prompt 中，而是以 compactSnapshot 摘要文件和本地 JSON 文件形式提供。'
+                '所有 guideRef、fileRef、compactSnapshotRef.fileRef 等相对文件引用，均以当前 iform-ai 技能安装目录/技能根目录为基准解析；不要写死某台机器上的绝对路径，也不要改到 workspace 或 references/assets 下探测。'
+                '请优先读取 analysisContext.compactSnapshotRef 指向的 compactSnapshot.json 摘要文件；只有摘要证据不足时，才读取 analysisContext.files 中列出的相对文件引用，并结合 analysisContext.guideRef 指向的说明文档理解字段含义和页签关联。'
                 'analysisType=overview/数据分析时，默认不要读取 references，也不要扩展参考资料；除非 analysisContext.instruction 明确要求知识库/参考文档。'
                 '不要要求调用方重复粘贴各页签 JSON，也不要假设 prompt 中已经内嵌了完整原始业务数据。'
                 '请优先依据证据链分析，不要臆造系统中不存在的字段或结论。'
@@ -979,6 +979,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'sessionId': analysis_context.get('sessionId', ''),
             'guideFileName': analysis_context.get('guideFileName', ''),
             'guideRef': analysis_context.get('guideRef', ''),
+            'compactSnapshotRef': {} if is_reference_only_analysis else analysis_context.get('compactSnapshotRef', {}),
             'files': [] if is_reference_only_analysis else analysis_context.get('files', []),
             'instruction': analysis_context.get('instruction', '')
         }
@@ -992,7 +993,13 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'analysisContext': minimal_analysis_context
         }
 
-        if not is_reference_only_analysis and isinstance(payload.get('compactSnapshot'), dict):
+        # 兼容旧前端：正常情况下 compactSnapshot 已保存为 analysisContext.compactSnapshotRef 指向的临时文件；
+        # 只有保存失败或旧版本前端仍内联 compactSnapshot 时，才透传到 prompt。
+        if (
+            not is_reference_only_analysis
+            and not minimal_analysis_context.get('compactSnapshotRef')
+            and isinstance(payload.get('compactSnapshot'), dict)
+        ):
             prompt_payload['compactSnapshot'] = payload.get('compactSnapshot')
 
         return (

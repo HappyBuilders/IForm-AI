@@ -115,7 +115,7 @@
         overview: {
             id: 'overview',
             name: '数据分析',
-            prompt: '你是一名 IForm 数据分析助手。所有 guideRef、fileRef 相对路径都以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径，也不要改到 workspace 或 references/assets 下探测。数据分析优先使用 prompt 中的 compactSnapshot（字段映射、当前值、日志变更摘要、权限摘要）；只有摘要不足时，才按需读取 guideRef 与 files 中提供的 JSON 文件：formConfig.json、document.json、approval.json、businessLog.json。默认不要读取 references，不要扩展无关资料。分析步骤必须收敛为：1）先用 compactSnapshot.fieldMap/currentValues/changeTimeline 判断；2）摘要不足时再用 formConfig 建立 fieldId 到字段标题/控件类型/字段编码映射；3）再从 document 提取当前单据字段值；4）再从 businessLog 提取与当前单据直接相关的字段变更记录；5）仅当问题涉及审批、流程、权限时才使用 approval。输出要求：只输出“1. 问题理解 2. 问题定位 4. 参考文档 5. 解决方案 6. 最终结论”；每部分最多 3 条；不要复述大段原始数据，不要展开分析过程，不要写无证据推断；若证据不足，直接写明缺失数据或待确认项；优先短句、结论先行、证据对应字段名。'
+            prompt: '你是一名 IForm 数据分析助手。所有 guideRef、fileRef、compactSnapshotRef.fileRef 相对路径都以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径，也不要改到 workspace 或 references/assets 下探测。数据分析优先读取 analysisContext.compactSnapshotRef 指向的 compactSnapshot.json 摘要文件（字段映射、当前值、日志变更摘要、权限摘要）；只有摘要不足时，才按需读取 guideRef 与 files 中提供的 JSON 文件：formConfig.json、document.json、approval.json、businessLog.json。默认不要读取 references，不要扩展无关资料。分析步骤必须收敛为：1）先用 compactSnapshot.json 的 fieldMap/currentValues/changeTimeline 判断；2）摘要不足时再用 formConfig 建立 fieldId 到字段标题/控件类型/字段编码映射；3）再从 document 提取当前单据字段值；4）再从 businessLog 提取与当前单据直接相关的字段变更记录；5）仅当问题涉及审批、流程、权限时才使用 approval。输出要求：只输出“1. 问题理解 2. 问题定位 4. 参考文档 5. 解决方案 6. 最终结论”；每部分最多 3 条；不要复述大段原始数据，不要展开分析过程，不要写无证据推断；若证据不足，直接写明缺失数据或待确认项；优先短句、结论先行、证据对应字段名。'
         },
         jira: {
             id: 'jira',
@@ -141,7 +141,7 @@
         return div.innerHTML;
     }
 
-    function handleAIAnalyzeClick() {
+    async function handleAIAnalyzeClick() {
         const analysisType = getAIAnalysisTypeValue();
         const isExemptAnalysis = isExemptFromCoreDataCheck(analysisType);
 
@@ -171,7 +171,7 @@
             console.warn('analysisContext.files 为空，将继续依赖 sessionId 对应的 manifest.json 进行后端兜底发现');
         }
 
-        const analysisData = buildAIAnalysisRequestPayload(problemDescription);
+        const analysisData = await buildAIAnalysisRequestPayload(problemDescription);
 
         if (elements.aiAnalyzeBtn) {
             elements.aiAnalyzeBtn.disabled = true;
@@ -278,7 +278,7 @@
         return hasCoreBusinessDataReady();
     }
 
-    function buildAIAnalysisRequestPayload(problemDescription) {
+    async function buildAIAnalysisRequestPayload(problemDescription) {
         const analysisType = getAIAnalysisTypeValue();
         const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
         const isReferenceOnlyAnalysis = isExemptFromCoreDataCheck(analysisType);
@@ -288,6 +288,9 @@
             ? allContextFiles.filter((item) => item && ['formConfig.json', 'document.json', 'approval.json', 'businessLog.json'].includes(item.fileName || item.name))
             : allContextFiles;
         const dataAnalysisSnapshot = isDataAnalysis ? buildCompactDataAnalysisSnapshot() : null;
+        const compactSnapshotRef = isDataAnalysis
+            ? await saveAnalysisContextFile('compactSnapshot', dataAnalysisSnapshot, '数据分析摘要快照：字段映射、当前值、日志变更摘要、权限摘要和来源摘要。')
+            : null;
 
         const payload = {
             mode: 'jira_problem_analysis',
@@ -303,13 +306,18 @@
                 instruction: isReferenceOnlyAnalysis
                     ? '当前分析类型为场景分析。不要分析业务数据，不要依赖临时文件中的各页签 JSON，请直接根据用户问题和 references 参考文件内容进行场景匹配、功能说明与方案建议。'
                     : isDataAnalysis
-                        ? '当前分析类型为数据分析。所有 guideRef/fileRef 相对路径均以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径。优先使用 compactSnapshot 中的字段映射、当前值、日志变更摘要和权限摘要进行判断；仅在摘要不足时再按需读取 guideRef 和 files 中的四个 JSON 文件。默认不要读取 references。输出必须短、准、基于证据，每部分最多 3 条。'
+                        ? '当前分析类型为数据分析。所有 guideRef/fileRef 相对路径均以当前 iform-ai 技能安装目录/技能根目录为基准解析，不要写死绝对路径。优先读取 analysisContext.compactSnapshotRef 指向的 compactSnapshot.json 摘要文件（字段映射、当前值、日志变更摘要、权限摘要）；仅在摘要不足时再按需读取 guideRef 和 files 中的四个 JSON 文件。默认不要读取 references。输出必须短、准、基于证据，每部分最多 3 条。'
                         : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
             }
         };
 
         if (isDataAnalysis) {
-            payload.compactSnapshot = dataAnalysisSnapshot;
+            if (compactSnapshotRef) {
+                payload.analysisContext.compactSnapshotRef = compactSnapshotRef;
+            } else {
+                payload.compactSnapshot = dataAnalysisSnapshot;
+                payload.analysisContext.compactSnapshotSaveWarning = 'compactSnapshot.json 保存失败，已临时回退为 prompt 内联 compactSnapshot。';
+            }
         } else {
             payload.tabStatus = currentAnalysisContext && currentAnalysisContext.tabStatus ? Object.assign({}, currentAnalysisContext.tabStatus) : {};
             payload.generatedAt = new Date().toISOString();
