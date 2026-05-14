@@ -2048,7 +2048,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
             业务日志id: mergedItem.businessId || '-',
             操作类型编码: mergedItem.busiObjCode || '-',
             操作对象名称: mergedItem.busiObjName || '-',
-            操作详情: mergedItem.detail || '-',
+            操作名称: mergedItem.busiObjTypeName || mergedItem.operName || '-',
             操作人名称: mergedItem.operatorName || '-',
             操作时间: mergedItem.operationDate || mergedItem.ts || '-',
             ts: mergedItem.ts || '-',
@@ -2529,8 +2529,8 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
         return `
             <div class="business-data-view">
                 ${baseEntries.length ? renderBusinessSection('基础信息', '展示当前业务日志查询范围、分页与加载状态。', renderBusinessTable(baseEntries)) : ''}
-                ${renderBusinessSection('日志列表', '按时间、操作人、服务和操作对象展示日志记录。', renderBusinessLogListTable(logs))}
-                ${logs.length ? renderBusinessSection('日志记录详情', '展开单条记录查看操作详情、日志体和请求内容。', renderBusinessLogDetailList(logs), { collapsible: true, sectionKey: 'business-log-record-details' }) : ''}
+                ${renderBusinessSection('日志列表', '按时间、操作人、操作名称和操作对象展示日志记录。', renderBusinessLogListTable(logs))}
+                ${logs.length ? renderBusinessSection('日志记录详情', '展开单条记录查看操作名称、日志体和请求内容。', renderBusinessLogDetailList(logs), { collapsible: true, sectionKey: 'business-log-record-details' }) : ''}
             </div>
         `;
     }
@@ -2548,8 +2548,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
                             <th>序号</th>
                             <th>操作时间</th>
                             <th>操作人</th>
-                            <th>服务</th>
-                            <th>应用</th>
+                            <th>操作名称</th>
                             <th>操作类型</th>
                             <th>结果</th>
                             <th>业务日志id</th>
@@ -2561,8 +2560,7 @@ function buildDocumentRenderData(documentParsed, formConfig, approvalRaw, rawDoc
                                 <th scope="row">${escapeHtml(String(item.序号 || index + 1))}</th>
                                 <td>${escapeHtml(item.操作时间 || '-')}</td>
                                 <td>${escapeHtml(item.操作人名称 || '-')}</td>
-                                <td>${escapeHtml(item.服务名称 || '-')}</td>
-                                <td>${escapeHtml(item.应用名称 || '-')}</td>
+                                <td>${escapeHtml(item.操作名称 || '-')}</td>
                                 <td>${escapeHtml(item.操作类型编码 || '-')}</td>
                                 <td>${escapeHtml(item.操作结果 || '-')}</td>
                                 <td>${escapeHtml(item.业务日志id || '-')}</td>
