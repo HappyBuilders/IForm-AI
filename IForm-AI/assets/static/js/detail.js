@@ -50,8 +50,8 @@
     const JIRA_COOKIE_STORAGE_KEY = CONFIG.storageKey + '_jira_cookie';
     const JIRA_RECENT_ISSUES_PAGE_SIZE = 10;
     const AI_ANALYSIS_DATA_GUIDE_NAME = 'AI_ANALYSIS_DATA_GUIDE.md';
-    const ANALYSIS_BUNDLE_INLINE_MAX_CHARS = 100000;
-    const ANALYSIS_BUNDLE_FILE_MAX_CHARS = 200000;
+    const ANALYSIS_BUNDLE_INLINE_MAX_CHARS = 60000;
+    const ANALYSIS_BUNDLE_FILE_MAX_CHARS = 80000;
     const collapseStateStore = {};
     const PARAM_DEPENDENT_TAB_KEYS = ['formConfig', 'document', 'approval'];
     const analysisSessionId = buildAnalysisSessionId();
@@ -312,20 +312,22 @@
         const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
         const isReferenceOnlyAnalysis = isExemptFromCoreDataCheck(analysisType);
         const isDataAnalysis = analysisType === AI_ANALYSIS_TYPES.overview.id;
+        const isJiraAnalysis = analysisType === AI_ANALYSIS_TYPES.jira.id;
+        const shouldUseEvidenceBundle = isDataAnalysis || isJiraAnalysis;
         const allContextFiles = isReferenceOnlyAnalysis ? [] : buildAnalysisContextFileList();
-        const dataAnalysisFiles = isDataAnalysis
+        const dataAnalysisFiles = shouldUseEvidenceBundle
             ? allContextFiles.filter((item) => item && ['formConfig.json', 'document.json', 'approval.json', 'businessLog.json'].includes(item.fileName || item.name))
             : allContextFiles;
-        const dataAnalysisSnapshot = isDataAnalysis ? buildCompactDataAnalysisSnapshot() : null;
-        const analysisBundle = isDataAnalysis
+        const dataAnalysisSnapshot = shouldUseEvidenceBundle ? buildCompactDataAnalysisSnapshot() : null;
+        const analysisBundle = shouldUseEvidenceBundle
             ? shrinkAnalysisBundle(buildAnalysisBundle(problemDescription, dataAnalysisSnapshot, dataAnalysisFiles), ANALYSIS_BUNDLE_FILE_MAX_CHARS)
             : null;
         const analysisBundleText = analysisBundle ? JSON.stringify(analysisBundle) : '';
         const shouldInlineBundle = Boolean(analysisBundle && analysisBundleText.length <= ANALYSIS_BUNDLE_INLINE_MAX_CHARS);
-        const compactSnapshotRef = isDataAnalysis
+        const compactSnapshotRef = shouldUseEvidenceBundle
             ? await saveAnalysisContextFile('compactSnapshot', dataAnalysisSnapshot, '数据分析摘要快照：字段映射、当前值、日志变更摘要、权限摘要和来源摘要。')
             : null;
-        const bundleRef = isDataAnalysis && !shouldInlineBundle
+        const bundleRef = shouldUseEvidenceBundle && !shouldInlineBundle
             ? await saveAnalysisContextFile('analysisBundle', analysisBundle, '智能分析合并上下文：包含 evidencePack、compactSnapshot、fallbackFiles 和读取策略。')
             : null;
 
@@ -334,22 +336,31 @@
             analysisType: analysisType,
             analysisTypeName: analysisTemplate.name,
             problemDescription: problemDescription,
-            params: isDataAnalysis ? buildCompactAIParams(currentParams || {}) : sanitizeParamsForAI(currentParams || {}),
+            params: shouldUseEvidenceBundle ? buildCompactAIParams(currentParams || {}) : sanitizeParamsForAI(currentParams || {}),
             analysisContext: {
                 sessionId: analysisSessionId,
-                files: dataAnalysisFiles,
+                files: shouldUseEvidenceBundle ? [] : dataAnalysisFiles,
                 guideFileName: AI_ANALYSIS_DATA_GUIDE_NAME,
                 guideRef: isReferenceOnlyAnalysis ? '' : resolveAnalysisGuideRef(),
                 instruction: isReferenceOnlyAnalysis
                     ? '当前分析类型为场景分析。不要分析业务数据，不要依赖临时文件中的各页签 JSON，请直接根据用户问题和 references 参考文件内容进行场景匹配、功能说明与方案建议。'
-                    : isDataAnalysis
-                        ? '当前分析类型为数据分析。优先使用 analysisBundleInline；其次读取 analysisContext.bundleRef.fileRef 的 analysisBundle.json；仅当 bundle 证据不足时读取 compactSnapshotRef、fallbackFiles 或 files。所有相对 fileRef/guideRef 均以 iform-ai 技能根目录解析，禁止写死绝对路径、改到 workspace/references/assets 下探测或要求调用方重复粘贴 JSON。默认不读 references，除非 instruction 明确要求。输出中文，短、准，每部分最多 4 条，严格按 1. 问题理解 2. 问题定位 3. 参考文档 4. 解决方案 5. 最终结论 输出。'
+                    : shouldUseEvidenceBundle
+                        ? '\u5f53\u524d\u5206\u6790\u7c7b\u578b\u4e3a\u6570\u636e/Jira\u5b9a\u4f4d\u5206\u6790\u3002\u4f18\u5148\u76f4\u63a5\u4f7f\u7528 analysisBundleInline \u7684 evidencePack \u4e0e compactSnapshot \u8f93\u51fa\u7ed3\u8bba\uff1b\u5176\u6b21\u8bfb\u53d6 analysisContext.bundleRef.fileRef\uff1b\u4ec5\u5f53\u5185\u8054/\u5408\u5e76\u8bc1\u636e\u4e0d\u8db3\u65f6\u624d\u8bfb\u53d6 compactSnapshotRef \u6216 fallbackFiles\u3002\u82e5\u4e1a\u52a1\u8bc1\u636e\u4ecd\u4e0d\u8db3\u4ee5\u89e3\u91ca\u673a\u5236\u6216\u7ed9\u51fa\u65b9\u6848\uff0c\u624d\u6309 referenceFallbackPolicy \u8bfb\u53d6 references/QUICK_INDEX.md \u5e76\u547d\u4e2d\u6700\u591a 1~2 \u7bc7\u6587\u6863\uff1b\u7981\u6b62\u626b\u63cf\u5168\u90e8 references\u3002\u6240\u6709\u76f8\u5bf9 fileRef/guideRef \u5747\u4ee5 iform-ai \u6280\u80fd\u6839\u76ee\u5f55\u89e3\u6790\uff0c\u7981\u6b62\u5199\u6b7b\u7edd\u5bf9\u8def\u5f84\u3001\u6539\u5230 workspace/references/assets \u4e0b\u63a2\u6d4b\u6216\u8981\u6c42\u8c03\u7528\u65b9\u91cd\u590d\u7c98\u8d34 JSON\u3002\u8f93\u51fa\u4e2d\u6587\uff0c\u77ed\u3001\u51c6\uff0c\u6bcf\u90e8\u5206\u6700\u591a 4 \u6761\uff0c\u4e25\u683c\u6309 1. \u95ee\u9898\u7406\u89e3 2. \u95ee\u9898\u5b9a\u4f4d 3. \u53c2\u8003\u6587\u6863 4. \u89e3\u51b3\u65b9\u6848 5. \u6700\u7ec8\u7ed3\u8bba \u8f93\u51fa\u3002'
                         : '各页签原始 JSON 数据已写入 files 中列出的相对文件引用。请根据 guideRef 指向的说明文档理解各文件字段含义、页签关系和分析方法，不要要求调用方把大 JSON 放入 prompt。'
             }
         };
 
-        if (isDataAnalysis) {
+        if (shouldUseEvidenceBundle) {
             payload.analysisContext.fallbackFiles = dataAnalysisFiles;
+            payload.analysisContext.referenceFallbackPolicy = {
+                enabled: true,
+                trigger: '\u4ec5\u5f53 analysisBundle/compactSnapshot/fallbackFiles \u7684\u5b57\u6bb5\u3001\u65e5\u5fd7\u3001\u6743\u9650\u3001\u6d41\u7a0b\u8bc1\u636e\u4ecd\u4e0d\u8db3\u4ee5\u89e3\u91ca\u673a\u5236\u6216\u7ed9\u51fa\u65b9\u6848\u65f6\u542f\u7528\u3002',
+                entry: 'references/QUICK_INDEX.md',
+                troubleshootingEntry: 'references/TROUBLESHOOTING_PLAYBOOK.md',
+                maxDocs: 2,
+                maxChunksPerDoc: 1,
+                rule: '\u5148\u8bfb QUICK_INDEX.md\uff0c\u6309\u95ee\u9898\u5173\u952e\u8bcd\u547d\u4e2d 1~2 \u7bc7\u6700\u76f8\u5173\u6587\u6863\uff1b\u4e0d\u8981\u626b\u63cf\u5168\u90e8 references\uff1b\u4e0d\u8981\u8bfb\u53d6\u8fb9\u7f18\u76f8\u5173\u6587\u6863\u3002'
+            };
             if (shouldInlineBundle) {
                 payload.analysisBundleInline = analysisBundle;
             } else if (bundleRef) {
@@ -376,6 +387,7 @@
     function buildAnalysisBundle(problemDescription, compactSnapshot, fallbackFiles) {
         const analysisType = getAIAnalysisTypeValue();
         const analysisTemplate = AI_ANALYSIS_TYPES[analysisType] || AI_ANALYSIS_TYPES.diagnosis;
+        const evidencePack = buildEvidencePack(problemDescription, compactSnapshot, fallbackFiles);
         return sanitizeDataForAI({
             meta: {
                 sessionId: analysisSessionId,
@@ -386,11 +398,70 @@
             problemDescription: problemDescription,
             readStrategy: buildAnalysisReadStrategy(analysisType),
             params: buildCompactAIParams(currentParams || {}),
-            evidencePack: buildEvidencePack(problemDescription, compactSnapshot, fallbackFiles),
-            compactSnapshot: compactSnapshot,
+            evidencePack: evidencePack,
+            compactSnapshot: buildFocusedCompactSnapshotForAI(compactSnapshot, evidencePack),
             fallbackFiles: fallbackFiles,
             guideRef: resolveAnalysisGuideRef()
         });
+    }
+
+    function buildFocusedCompactSnapshotForAI(compactSnapshot, evidencePack) {
+        if (!compactSnapshot || typeof compactSnapshot !== 'object') {
+            return {};
+        }
+        const matchedFields = Array.isArray(evidencePack && evidencePack.matchedFields) ? evidencePack.matchedFields : [];
+        const matchedFieldIds = new Set(matchedFields.map((item) => item['\u5b57\u6bb5ID'] || item.fieldId).filter(Boolean));
+        const hasFieldHit = matchedFieldIds.size > 0;
+        const currentValues = Array.isArray(compactSnapshot.currentValues) ? compactSnapshot.currentValues : [];
+        const fieldMap = Array.isArray(compactSnapshot.fieldMap) ? compactSnapshot.fieldMap : [];
+        const matchedChangeRecords = Array.isArray(evidencePack && evidencePack.matchedChangeRecords) ? evidencePack.matchedChangeRecords : [];
+        const sourceSummaries = compactSnapshot.sourceSummaries || {};
+        const documentSummary = sourceSummaries.document || {};
+        const businessLogSummary = sourceSummaries.businessLog || {};
+
+        return sanitizeDataForAI({
+            meta: compactSnapshot.meta || {},
+            fieldMap: (hasFieldHit ? fieldMap.filter((item) => matchedFieldIds.has(item['\u5b57\u6bb5ID'] || item.fieldId)) : fieldMap).slice(0, hasFieldHit ? 20 : 30),
+            currentValues: (hasFieldHit ? currentValues.filter((item) => matchedFieldIds.has(item['\u5b57\u6bb5ID'] || item.fieldId)) : currentValues).slice(0, hasFieldHit ? 20 : 30),
+            changeTimeline: (matchedChangeRecords.length ? matchedChangeRecords : (compactSnapshot.changeTimeline || []).slice(0, 8)).slice(0, 20),
+            permissionSummary: buildFocusedPermissionSummaryForAI(compactSnapshot.permissionSummary || {}, matchedFieldIds),
+            processSummary: compactSnapshot.processSummary || {},
+            sourceSummaries: {
+                formConfig: sourceSummaries.formConfig || {},
+                document: {
+                    ['\u5355\u636e\u7248\u672c']: documentSummary['\u5355\u636e\u7248\u672c'],
+                    ['\u6d41\u7a0b\u7248\u672c']: documentSummary['\u6d41\u7a0b\u7248\u672c'],
+                    ['\u6d41\u7a0b\u5b9e\u4f8bID']: documentSummary['\u6d41\u7a0b\u5b9e\u4f8bID'],
+                    ['\u5355\u636e\u65f6\u95f4']: documentSummary['\u5355\u636e\u65f6\u95f4'],
+                    ['\u6700\u540e\u4fee\u6539\u65f6\u95f4']: documentSummary['\u6700\u540e\u4fee\u6539\u65f6\u95f4'],
+                    ['\u6d41\u7a0b\u5b57\u6bb5']: documentSummary['\u6d41\u7a0b\u5b57\u6bb5'],
+                    ['\u4e3b\u8868\u5b57\u6bb5\u503c']: (documentSummary['\u4e3b\u8868\u5b57\u6bb5\u503c'] || []).slice(0, hasFieldHit ? 20 : 30),
+                    ['\u5b50\u8868\u884c\u6570']: documentSummary['\u5b50\u8868\u884c\u6570']
+                },
+                approval: sourceSummaries.approval || {},
+                businessLog: {
+                    ['\u65e5\u5fd7\u8303\u56f4']: businessLogSummary['\u65e5\u5fd7\u8303\u56f4'],
+                    ['\u5217\u8868\u8bb0\u5f55\u6570']: businessLogSummary['\u5217\u8868\u8bb0\u5f55\u6570'],
+                    ['\u8be6\u60c5\u5339\u914d\u6570']: businessLogSummary['\u8be6\u60c5\u5339\u914d\u6570'],
+                    ['\u6700\u65b0\u72b6\u6001']: businessLogSummary['\u6700\u65b0\u72b6\u6001']
+                }
+            }
+        });
+    }
+
+    function buildFocusedPermissionSummaryForAI(permissionSummary, matchedFieldIds) {
+        const result = {};
+        const hasFieldHit = matchedFieldIds && matchedFieldIds.size > 0;
+        Object.keys(permissionSummary || {}).forEach((nodeName) => {
+            const items = Array.isArray(permissionSummary[nodeName]) ? permissionSummary[nodeName] : [];
+            const selected = hasFieldHit
+                ? items.filter((item) => matchedFieldIds.has(item.fieldId || item['\u5b57\u6bb5ID']))
+                : items.slice(0, 20);
+            if (selected.length) {
+                result[nodeName] = selected;
+            }
+        });
+        return result;
     }
 
     function buildAnalysisReadStrategy(analysisType) {

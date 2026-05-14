@@ -960,7 +960,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 '- 兜底：仅当 bundle 证据不足时，读取 compactSnapshotRef、fallbackFiles 或 files。'
                 '- 路径：所有相对 fileRef/guideRef 均以 iform-ai 技能根目录解析。'
                 '- 禁止：写死绝对路径；改到 workspace、references/assets 下探测；要求调用方重复粘贴 JSON。'
-                '- overview/数据分析：默认不读 references，除非 instruction 明确要求。'
+                '- \u9ed8\u8ba4\u4e0d\u8bfb references\uff1b\u4ec5\u5f53\u4e1a\u52a1\u8bc1\u636e\u4e0d\u8db3\u4ee5\u89e3\u91ca\u673a\u5236\u6216\u7ed9\u51fa\u65b9\u6848\u65f6\uff0c\u624d\u6309 referenceFallbackPolicy \u5148\u8bfb QUICK_INDEX.md\uff0c\u518d\u547d\u4e2d\u6700\u591a 1~2 \u7bc7\u6587\u6863\u3002'
+                '- \u7981\u6b62\u626b\u63cf\u5168\u90e8 references \u6216\u8bfb\u53d6\u8fb9\u7f18\u76f8\u5173\u6587\u6863\u3002'
                 '证据规则：'
                 '- 优先使用 bundle 中 evidencePack、compactSnapshot。'
                 '- 只基于已有字段、日志、权限、流程证据下结论。'
@@ -992,6 +993,7 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             'compactSnapshotRef': {} if is_reference_only_analysis else analysis_context.get('compactSnapshotRef', {}),
             'fallbackFiles': [] if is_reference_only_analysis else analysis_context.get('fallbackFiles', analysis_context.get('files', [])),
             'files': [] if is_reference_only_analysis else analysis_context.get('files', []),
+            'referenceFallbackPolicy': {} if is_reference_only_analysis else analysis_context.get('referenceFallbackPolicy', {}),
             'instruction': analysis_context.get('instruction', '')
         }
 
@@ -1558,9 +1560,15 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return f"{prompt_text}\n\n{guide}"
 
     def should_skip_reference_guide(self, prompt_text):
-        """Skip global references index for compact data analysis prompts."""
+        """Skip global references index for compact evidence-bundle analysis prompts."""
         normalized = str(prompt_text or '').lower()
-        return '"analysistype": "overview"' in normalized
+        if '"analysistype": "overview"' in normalized:
+            return True
+        if '"analysistype": "jira"' in normalized and '"analysisbundleinline"' in normalized:
+            return True
+        if 'references' in normalized and '"analysisbundleinline"' in normalized and 'bundle' in normalized:
+            return True
+        return False
 
     # ========== AI 分析相关函数 ==========
     def build_analysis_prompt(self, base_prompt, data, analysis_type):
