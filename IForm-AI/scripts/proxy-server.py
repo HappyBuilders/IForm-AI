@@ -1799,6 +1799,9 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         if not openclaw_bin:
             return None
 
+        cli_version = self.get_openclaw_cli_version(openclaw_bin)
+        print(f'[IForm-AI] 使用 openclaw CLI 调用智能分析: {openclaw_bin} version={cli_version or "unknown"}', flush=True)
+
         command = [
             openclaw_bin,
             'agent',
@@ -1833,19 +1836,20 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         stderr = (completed.stderr or '').strip()
         if completed.returncode != 0:
             # CLI 自身不可用（例如 PATH 旧版本读不懂新配置）时，不要中断分析；交给 Gateway HTTP 兜底。
-            print(f'⚠️ openclaw CLI 调用失败，将回退 Gateway: {self.truncate_text(stderr or stdout or str(completed.returncode), 500)}')
+            print(f'⚠️ openclaw CLI 调用失败，将回退 Gateway: {self.truncate_text(stderr or stdout or str(completed.returncode), 500)}', flush=True)
             return None
 
         result = self.extract_json_object_from_text(stdout)
         if not isinstance(result, dict):
-            print(f'⚠️ openclaw CLI 未返回可解析 JSON，将回退 Gateway: {self.truncate_text(stdout or stderr, 500)}')
+            print(f'⚠️ openclaw CLI 未返回可解析 JSON，将回退 Gateway: {self.truncate_text(stdout or stderr, 500)}', flush=True)
             return None
 
         content = self.extract_content_from_openclaw_cli_response(result)
         if content:
+            print('[IForm-AI] openclaw CLI 智能分析调用成功，已提取返回文本', flush=True)
             return {'content': content}
 
-        print(f'⚠️ openclaw CLI JSON 中未找到文本内容，将回退 Gateway: {self.truncate_text(stdout, 500)}')
+        print(f'⚠️ openclaw CLI JSON 中未找到文本内容，将回退 Gateway: {self.truncate_text(stdout, 500)}', flush=True)
         return None
 
     def extract_json_object_from_text(self, text):
