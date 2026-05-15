@@ -1707,20 +1707,91 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 请结合业务数据和Jira工单进行分析。"""
 
     def resolve_openclaw_cli(self):
-        """优先使用 YonClaw 随应用分发的新版本 openclaw CLI，避免 PATH 中旧版本无法识别新配置。"""
-        candidates = [
+        """可移植地发现 openclaw CLI。
+
+        技能包会安装到不同机器，不能写死 YonClaw 安装目录。这里优先尊重显式环境变量，
+        然后扫描 PATH 中所有 openclaw/openclaw.cmd，选择版本号最高的可执行文件，避免旧版本 CLI
+        因不认识新配置字段而导致智能分析失败。
+        """
+        env_candidates = [
             os.environ.get('YONCLAW_OPENCLAW_CLI'),
-            os.environ.get('OPENCLAW_CLI'),
-            r'D:\Program_Files\YonClaw\resources\cli\openclaw.cmd',
-            r'D:\Program_Files\YonClaw\resources\cli\openclaw',
-            shutil.which('openclaw.cmd'),
-            shutil.which('openclaw')
+            os.environ.get('OPENCLAW_CLI')
         ]
 
+        candidates = []
+        for candidate in env_candidates:
+            if candidate:
+                candidates.append(candidate)
+
+        candidates.extend(self.find_openclaw_cli_candidates_from_path())
+
+        resolved = []
+        seen = set()
         for candidate in candidates:
-            if candidate and os.path.exists(candidate):
-                return candidate
-        return None
+            normalized = os.path.normpath(str(candidate or '').strip().strip('"'))
+            if not normalized:
+                continue
+            key = os.path.normcase(normalized)
+            if key in seen or not os.path.exists(normalized):
+                continue
+            seen.add(key)
+            resolved.append(normalized)
+
+        if not resolved:
+            return None
+
+        scored = []
+        for index, candidate in enumerate(resolved):
+            version = self.get_openclaw_cli_version(candidate)
+            scored.append((self.parse_version_tuple(version), 0 if candidate in env_candidates else 1, index, candidate))
+
+        # 版本号越高越优先；显式环境变量在同版本时优先；最后保持发现顺序稳定。
+        scored.sort(key=lambda item: (item[0], -item[1], -item[2]), reverse=True)
+        return scored[0][3]
+
+    def find_openclaw_cli_candidates_from_path(self):
+        """枚举 PATH 中所有可能的 openclaw CLI，而不是只取 shutil.which 的第一个命中。"""
+        names = ['openclaw.cmd', 'openclaw.exe', 'openclaw']
+        candidates = []
+        for path_dir in os.environ.get('PATH', '').split(os.pathsep):
+            path_dir = path_dir.strip().strip('"')
+            if not path_dir:
+                continue
+            for name in names:
+                candidate = os.path.join(path_dir, name)
+                if os.path.exists(candidate):
+                    candidates.append(candidate)
+        return candidates
+
+    def get_openclaw_cli_version(self, openclaw_bin):
+        """读取 openclaw CLI 版本；读取失败时返回空字符串，后续按最低版本处理。"""
+        try:
+            completed = subprocess.run(
+                [openclaw_bin, '--version'],
+                cwd=str(PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False
+            )
+            output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+            match = re.search(r'OpenClaw\s+(\d+(?:\.\d+){0,3})', output)
+            return match.group(1) if match else ''
+        except Exception:
+            return ''
+
+    def parse_version_tuple(self, version):
+        """将 2026.3.24 这类版本转成可排序元组。"""
+        parts = []
+        for item in str(version or '').split('.'):
+            try:
+                parts.append(int(item))
+            except ValueError:
+                parts.append(0)
+        while len(parts) < 4:
+            parts.append(0)
+        return tuple(parts[:4])
 
     def invoke_openclaw_agent_via_cli(self, prompt_text, model):
         """通过 openclaw CLI 调用当前 YonClaw agent，作为 /v1/chat/completions 不可用时的稳定兜底。"""
