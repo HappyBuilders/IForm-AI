@@ -1838,57 +1838,51 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         result = self.extract_json_object_from_text(stdout)
         if not isinstance(result, dict):
-            raise RuntimeError(f'openclaw CLI 未返回合法 JSON: {self.truncate_text(stdout or stderr, 500)}')
+            print(f'⚠️ openclaw CLI 未返回可解析 JSON，将回退 Gateway: {self.truncate_text(stdout or stderr, 500)}')
+            return None
 
         content = self.extract_content_from_openclaw_cli_response(result)
         if content:
             return {'content': content}
 
-        raise RuntimeError(f'openclaw CLI 返回中未找到文本内容: {self.truncate_text(stdout, 500)}')
+        print(f'⚠️ openclaw CLI JSON 中未找到文本内容，将回退 Gateway: {self.truncate_text(stdout, 500)}')
+        return None
 
     def extract_json_object_from_text(self, text):
-        """openclaw CLI 可能在 JSON 前后输出插件日志，这里从文本中截取第一个完整 JSON 对象。"""
+        """从夹杂日志的 CLI 输出中提取第一个完整 JSON 对象。"""
         raw = str(text or '').strip()
         if not raw:
             return None
 
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            pass
+        cleaned = self.strip_ansi_sequences(raw)
+        decoder = json.JSONDecoder()
 
-        start = raw.find('{')
-        if start < 0:
-            return None
+        # 先试整段直接解析。
+        for candidate in (cleaned, raw):
+            try:
+                result, end_index = decoder.raw_decode(candidate)
+                if candidate[end_index:].strip() == '':
+                    return result
+            except json.JSONDecodeError:
+                pass
 
-        depth = 0
-        in_string = False
-        escape = False
-        for index in range(start, len(raw)):
-            char = raw[index]
-            if in_string:
-                if escape:
-                    escape = False
-                elif char == '\\':
-                    escape = True
-                elif char == '"':
-                    in_string = False
-                continue
-
-            if char == '"':
-                in_string = True
-            elif char == '{':
-                depth += 1
-            elif char == '}':
-                depth -= 1
-                if depth == 0:
-                    candidate = raw[start:index + 1]
-                    try:
-                        return json.loads(candidate)
-                    except json.JSONDecodeError:
-                        return None
+        # 再从每一个可能的 JSON 起点开始尝试，兼容前面夹杂插件日志的场景。
+        for source in (cleaned, raw):
+            for index, char in enumerate(source):
+                if char not in '{[':
+                    continue
+                try:
+                    result, _ = decoder.raw_decode(source[index:])
+                    if isinstance(result, dict):
+                        return result
+                except json.JSONDecodeError:
+                    continue
 
         return None
+
+    def strip_ansi_sequences(self, text):
+        """移除终端 ANSI 控制字符，避免影响 JSON 解析。"""
+        return re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', str(text or ''))
 
     def extract_content_from_openclaw_cli_response(self, result):
         """提取 openclaw agent --json 的回复文本。"""
