@@ -1772,6 +1772,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=15,
                 check=False
             )
@@ -1824,6 +1826,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=620,
                 check=False
             )
