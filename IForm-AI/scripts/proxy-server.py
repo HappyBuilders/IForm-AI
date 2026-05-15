@@ -1795,28 +1795,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             parts.append(0)
         return tuple(parts[:4])
 
-    def get_openclaw_cli_message_max_chars(self):
-        """返回通过命令行参数传递 prompt 的安全长度上限。
-
-        Windows 命令行长度有限，业务分析 prompt 过长时不适合走 `openclaw agent --message`。
-        默认保守设为 12000，可通过 IFORM_AI_CLI_MESSAGE_MAX_CHARS 调整。
-        """
-        raw_value = os.environ.get('IFORM_AI_CLI_MESSAGE_MAX_CHARS', '12000')
-        try:
-            return max(1000, int(raw_value))
-        except (TypeError, ValueError):
-            return 12000
-
     def invoke_openclaw_agent_via_cli(self, prompt_text, model):
         """通过 openclaw CLI 调用当前 YonClaw agent，作为 /v1/chat/completions 不可用时的稳定兜底。"""
-        max_message_chars = self.get_openclaw_cli_message_max_chars()
-        if len(str(prompt_text or '')) > max_message_chars:
-            print(
-                f'[IForm-AI] prompt 长度 {len(str(prompt_text or ""))} 超过 CLI 安全上限 {max_message_chars}，跳过 CLI，改走 Gateway',
-                flush=True
-            )
-            return None
-
         openclaw_bin = self.resolve_openclaw_cli()
         if not openclaw_bin:
             return None
