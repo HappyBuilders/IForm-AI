@@ -56,6 +56,28 @@ REFERENCE_CONTENT_CACHE = {}
 UPDATE_CONFIG_SCRIPT = SCRIPT_PATH.parent / 'update-config.py'
 
 
+def get_yonclaw_profile_roots():
+    roots = []
+    seen = set()
+    candidates = [
+        Path.home() / 'AppData' / 'Roaming' / 'yonclaw' / 'profiles',
+        Path.home() / 'Library' / 'Application Support' / 'yonclaw' / 'profiles'
+    ]
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        key = str(resolved).lower()
+        if key in seen or not resolved.exists():
+            continue
+        seen.add(key)
+        roots.append(resolved)
+
+    return roots
+
+
 def get_candidate_reference_roots():
     roots = []
     seen = set()
@@ -74,8 +96,7 @@ def get_candidate_reference_roots():
     # Always prefer the references directory next to the currently executing skill.
     add_root(PRIMARY_SKILL_REFERENCES_PATH)
 
-    yonclaw_runtime = Path.home() / 'AppData' / 'Roaming' / 'yonclaw' / 'profiles'
-    if yonclaw_runtime.exists():
+    for yonclaw_runtime in get_yonclaw_profile_roots():
         for profile_dir in yonclaw_runtime.iterdir():
             if not profile_dir.is_dir():
                 continue

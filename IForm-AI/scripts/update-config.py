@@ -13,13 +13,6 @@ from urllib.parse import urlparse, urlunparse
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), '..', 'assets', 'static', 'config', 'runtime-config.json')
 CONFIG_FILE = os.path.normpath(CONFIG_FILE)
 
-# YonClaw profiles 根目录（不要写死 profile id）
-YONCLAW_PROFILES_ROOT = os.path.join(
-    os.path.expanduser('~'),
-    'AppData', 'Roaming', 'yonclaw', 'profiles'
-)
-YONCLAW_PROFILES_ROOT = os.path.normpath(YONCLAW_PROFILES_ROOT)
-
 # 默认配置（无法获取时使用）
 DEFAULT_CONFIG = {
     "gatewayUrl": "http://127.0.0.1:29179/v1/chat/completions",
@@ -126,21 +119,41 @@ def read_existing_runtime_yonclaw_config():
         return {}
 
 
+def get_yonclaw_profile_roots():
+    """返回当前系统可能存在的 YonClaw profiles 根目录。"""
+    home_dir = os.path.expanduser('~')
+    candidates = [
+        os.path.join(home_dir, 'AppData', 'Roaming', 'yonclaw', 'profiles'),
+        os.path.join(home_dir, 'Library', 'Application Support', 'yonclaw', 'profiles')
+    ]
+
+    roots = []
+    seen = set()
+    for candidate in candidates:
+        normalized = os.path.normpath(candidate)
+        key = os.path.normcase(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isdir(normalized):
+            roots.append(normalized)
+    return roots
+
+
 
 def get_yonclaw_config_candidates():
     """自动扫描本机所有 YonClaw profile 下的 openclaw.json。"""
-    if not os.path.isdir(YONCLAW_PROFILES_ROOT):
-        return []
-
-    pattern = os.path.join(
-        YONCLAW_PROFILES_ROOT,
-        '*',
-        'userData',
-        'runtime',
-        'openclaw',
-        'openclaw.json'
-    )
-    candidates = [os.path.normpath(path) for path in glob.glob(pattern)]
+    candidates = []
+    for profiles_root in get_yonclaw_profile_roots():
+        pattern = os.path.join(
+            profiles_root,
+            '*',
+            'userData',
+            'runtime',
+            'openclaw',
+            'openclaw.json'
+        )
+        candidates.extend(os.path.normpath(path) for path in glob.glob(pattern))
 
     # 按修改时间倒序，优先最近活跃的 profile
     candidates.sort(key=lambda path: os.path.getmtime(path) if os.path.exists(path) else 0, reverse=True)
