@@ -1706,9 +1706,25 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 请结合业务数据和Jira工单进行分析。"""
 
+    def resolve_openclaw_cli(self):
+        """优先使用 YonClaw 随应用分发的新版本 openclaw CLI，避免 PATH 中旧版本无法识别新配置。"""
+        candidates = [
+            os.environ.get('YONCLAW_OPENCLAW_CLI'),
+            os.environ.get('OPENCLAW_CLI'),
+            r'D:\Program_Files\YonClaw\resources\cli\openclaw.cmd',
+            r'D:\Program_Files\YonClaw\resources\cli\openclaw',
+            shutil.which('openclaw.cmd'),
+            shutil.which('openclaw')
+        ]
+
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return None
+
     def invoke_openclaw_agent_via_cli(self, prompt_text, model):
         """通过 openclaw CLI 调用当前 YonClaw agent，作为 /v1/chat/completions 不可用时的稳定兜底。"""
-        openclaw_bin = shutil.which('openclaw')
+        openclaw_bin = self.resolve_openclaw_cli()
         if not openclaw_bin:
             return None
 
@@ -1745,7 +1761,9 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         stdout = (completed.stdout or '').strip()
         stderr = (completed.stderr or '').strip()
         if completed.returncode != 0:
-            raise RuntimeError(f'openclaw CLI 调用失败: {stderr or stdout or completed.returncode}')
+            # CLI 自身不可用（例如 PATH 旧版本读不懂新配置）时，不要中断分析；交给 Gateway HTTP 兜底。
+            print(f'⚠️ openclaw CLI 调用失败，将回退 Gateway: {self.truncate_text(stderr or stdout or str(completed.returncode), 500)}')
+            return None
 
         result = self.extract_json_object_from_text(stdout)
         if not isinstance(result, dict):
