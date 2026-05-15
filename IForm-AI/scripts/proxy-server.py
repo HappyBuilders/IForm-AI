@@ -1562,11 +1562,16 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         gateway_token = gateway_config.get('gatewayToken', '').strip()
         model = gateway_config.get('model', 'openclaw/main').strip()
 
-        if not gateway_url or not gateway_token:
-            raise RuntimeError('Gateway URL 或 Token 未配置')
-
         # 注入参考文档扫描指导
         prompt_with_guide = self.inject_reference_guide(prompt_text)
+
+        # 优先通过 openclaw CLI 调用当前 YonClaw agent，避免依赖可能不存在的 /v1/chat/completions。
+        cli_result = self.invoke_openclaw_agent_via_cli(prompt_with_guide, model)
+        if cli_result:
+            return cli_result
+
+        if not gateway_url or not gateway_token:
+            raise RuntimeError('Gateway URL 或 Token 未配置，且 openclaw CLI 不可用')
 
         return self.invoke_openclaw_agent_via_gateway(prompt_with_guide, gateway_url, gateway_token, model)
 
@@ -1700,6 +1705,119 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 {jira_info}
 
 请结合业务数据和Jira工单进行分析。"""
+
+    def invoke_openclaw_agent_via_cli(self, prompt_text, model):
+        """通过 openclaw CLI 调用当前 YonClaw agent，作为 /v1/chat/completions 不可用时的稳定兜底。"""
+        openclaw_bin = shutil.which('openclaw')
+        if not openclaw_bin:
+            return None
+
+        command = [
+            openclaw_bin,
+            'agent',
+            '--agent',
+            'main',
+            '--message',
+            prompt_text,
+            '--json',
+            '--timeout',
+            '600'
+        ]
+
+        if model and model not in ('openclaw/main', 'main'):
+            command.extend(['--model', model])
+
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=620,
+                check=False
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError('openclaw CLI 调用超时')
+        except Exception:
+            return None
+
+        stdout = (completed.stdout or '').strip()
+        stderr = (completed.stderr or '').strip()
+        if completed.returncode != 0:
+            raise RuntimeError(f'openclaw CLI 调用失败: {stderr or stdout or completed.returncode}')
+
+        result = self.extract_json_object_from_text(stdout)
+        if not isinstance(result, dict):
+            raise RuntimeError(f'openclaw CLI 未返回合法 JSON: {self.truncate_text(stdout or stderr, 500)}')
+
+        content = self.extract_content_from_openclaw_cli_response(result)
+        if content:
+            return {'content': content}
+
+        raise RuntimeError(f'openclaw CLI 返回中未找到文本内容: {self.truncate_text(stdout, 500)}')
+
+    def extract_json_object_from_text(self, text):
+        """openclaw CLI 可能在 JSON 前后输出插件日志，这里从文本中截取第一个完整 JSON 对象。"""
+        raw = str(text or '').strip()
+        if not raw:
+            return None
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+        start = raw.find('{')
+        if start < 0:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(raw)):
+            char = raw[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == '\\':
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start:index + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        return None
+
+        return None
+
+    def extract_content_from_openclaw_cli_response(self, result):
+        """提取 openclaw agent --json 的回复文本。"""
+        try:
+            payloads = result.get('result', {}).get('payloads', [])
+            if isinstance(payloads, list):
+                texts = []
+                for payload in payloads:
+                    if isinstance(payload, dict):
+                        text = payload.get('text')
+                        if isinstance(text, str) and text.strip():
+                            texts.append(text.strip())
+                if texts:
+                    return '\n\n'.join(texts)
+        except Exception:
+            pass
+
+        return self.extract_content_from_gateway_response(result) or self.extract_content_from_openai_response(result)
 
     def invoke_openclaw_agent_via_gateway(self, prompt_text, gateway_url, gateway_token, model):
         """通过 Gateway OpenAI 兼容 API 调用大模型"""
