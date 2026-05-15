@@ -1932,10 +1932,6 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def invoke_openclaw_agent_via_gateway(self, prompt_text, gateway_url, gateway_token, model):
         """通过 Gateway OpenAI 兼容 API 调用大模型"""
-        print(
-            f'[IForm-AI] 使用 Gateway HTTP 调用智能分析: url={gateway_url}, promptLength={len(str(prompt_text or ""))}',
-            flush=True
-        )
         payload = json.dumps({
             'model': model,
             'messages': [
@@ -1981,10 +1977,8 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             # 从 OpenAI 格式响应中提取文本
             content = self.extract_content_from_openai_response(result)
             if content:
-                print('[IForm-AI] Gateway HTTP 智能分析调用成功，已提取返回文本', flush=True)
                 return {'content': content}
 
-            print('[IForm-AI] Gateway HTTP 返回非标准内容，直接透传响应文本', flush=True)
             return {'content': response_text}
 
         except urllib.error.HTTPError as error:
@@ -1994,17 +1988,14 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     error_body = error.fp.read().decode('utf-8', errors='ignore')
                 except Exception:
                     pass
-            print(f'⚠️ Gateway API HTTP {error.code}: {error.reason} - {error_body}', flush=True)
             raise RuntimeError(f'Gateway API HTTP {error.code}: {error.reason} - {error_body}')
         except urllib.error.URLError as error:
             if 'timed out' in str(error.reason).lower() or isinstance(error.reason, TimeoutError):
                 raise TimeoutError('Gateway API 调用超时')
-            print(f'⚠️ Gateway API 网络错误: {error.reason}', flush=True)
             raise RuntimeError(f'Gateway API 网络错误: {error.reason}')
         except TimeoutError:
             raise
         except Exception as error:
-            print(f'⚠️ Gateway API 调用失败: {error}', flush=True)
             raise RuntimeError(f'Gateway API 调用失败: {error}')
 
     def extract_content_from_openai_response(self, result):
@@ -2836,7 +2827,7 @@ def main():
     refresh_runtime_config()
     os.chdir(DIRECTORY)
 
-    with socketserver.ThreadingTCPServer(("", PORT), ProxyHTTPRequestHandler) as httpd:
+    with socketserver.TCPServer(("", PORT), ProxyHTTPRequestHandler) as httpd:
         url = f"http://localhost:{PORT}/templates/index.html"
         print(f"\n{'=' * 60}")
         print('[IForm-AI] 本地代理服务已启动')
