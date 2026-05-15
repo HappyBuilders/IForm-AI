@@ -1565,15 +1565,22 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         # 注入参考文档扫描指导
         prompt_with_guide = self.inject_reference_guide(prompt_text)
 
-        # 优先通过 openclaw CLI 调用当前 YonClaw agent，避免依赖可能不存在的 /v1/chat/completions。
+        # 优先通过 Gateway HTTP API 调用（直连当前 YonClaw agent），更稳定可靠。
+        if gateway_url and gateway_token:
+            try:
+                gateway_result = self.invoke_openclaw_agent_via_gateway(
+                    prompt_with_guide, gateway_url, gateway_token, model)
+                if gateway_result:
+                    return gateway_result
+            except Exception as e:
+                print(f'[IForm-AI] Gateway API 调用失败，准备回退到 CLI: {e}')
+
+        # 兜底：通过 openclaw CLI 调用
         cli_result = self.invoke_openclaw_agent_via_cli(prompt_with_guide, model)
         if cli_result:
             return cli_result
 
-        if not gateway_url or not gateway_token:
-            raise RuntimeError('Gateway URL 或 Token 未配置，且 openclaw CLI 不可用')
-
-        return self.invoke_openclaw_agent_via_gateway(prompt_with_guide, gateway_url, gateway_token, model)
+        raise RuntimeError('Gateway API 和 openclaw CLI 均不可用')
 
     def inject_reference_guide(self, prompt_text):
         """Append reference index only when needed; overview data analysis should not be guided to references by default."""
@@ -1743,9 +1750,16 @@ class ProxyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         scored = []
         for index, candidate in enumerate(resolved):
             version = self.get_openclaw_cli_version(candidate)
-            scored.append((self.parse_version_tuple(version), 0 if candidate in env_candidates else 1, index, candidate))
+            # 优先级：YonClaw 自带 > 环境变量指定 > PATH 通用扫描
+            if 'YonClaw' in candidate or 'YONCLAW' in candidate:
+                priority = 0
+            elif candidate in env_candidates:
+                priority = 1
+            else:
+                priority = 2
+            scored.append((self.parse_version_tuple(version), priority, index, candidate))
 
-        # 版本号越高越优先；显式环境变量在同版本时优先；最后保持发现顺序稳定。
+        # 降序：版本高优先；同版本时优先级值小优先（YonClaw=0 > 环境变量=1 > PATH=2）
         scored.sort(key=lambda item: (item[0], -item[1], -item[2]), reverse=True)
         return scored[0][3]
 
@@ -2799,7 +2813,7 @@ def main():
     refresh_runtime_config()
     os.chdir(DIRECTORY)
 
-    with socketserver.TCPServer(("", PORT), ProxyHTTPRequestHandler) as httpd:
+    with socketserver.ThreadingTCPServer (("", PORT), ProxyHTTPRequestHandler) as httpd:
         url = f"http://localhost:{PORT}/templates/index.html"
         print(f"\n{'=' * 60}")
         print('[IForm-AI] 本地代理服务已启动')
